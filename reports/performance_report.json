@@ -1,0 +1,19 @@
+{
+  "report_generated": "2025-12-04T21:26:54.727191",
+  "total_runs": 0,
+  "successful_runs": 0,
+  "success_rate": 0,
+  "average_duration": 0,
+  "recent_failures": [],
+  "data_quality": {
+    "training_data_exists": true,
+    "model_exists": true,
+    "predictions_exist": true,
+    "data_freshness": "5 days, 0:03:46.297262"
+  },
+  "system_health": {
+    "health_score": 75,
+    "status": "healthy"
+  },
+  "error": "Нет данных о запусках DAG"
+}

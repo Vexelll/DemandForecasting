@@ -1,0 +1,37 @@
+{
+  "model_comparison": {
+    "LinearRegression": {
+      "MAE": 940.1135661465698,
+      "RMSE": 1378.4278312154167,
+      "MAPE": 14.39283222522063,
+      "R2": 0.8153262303706134,
+      "MaxError": 19423.381830382394,
+      "Samples": 158073,
+      "training_time_seconds": 1.249749
+    },
+    "RandomForest": {
+      "MAE": 716.9882194935251,
+      "RMSE": 1054.996312254031,
+      "MAPE": 10.585871504342665,
+      "R2": 0.891821979299477,
+      "MaxError": 14880.51,
+      "Samples": 158073,
+      "training_time_seconds": 144.557539
+    },
+    "MeanBaseline": {
+      "MAE": 2326.0744765100485,
+      "RMSE": 3237.773800123526,
+      "MAPE": 36.281284661073435,
+      "R2": -0.018896702762593254,
+      "MaxError": 31870.084120696854,
+      "Samples": 158073,
+      "training_time_seconds": 0.007245
+    }
+  },
+  "summary": {
+    "best_model": "RandomForest",
+    "best_mape": 10.585871504342665,
+    "total_training_time": 145.81453299999998,
+    "execution_timestamp": "2025-12-05T14:00:58.962959"
+  }
+}
