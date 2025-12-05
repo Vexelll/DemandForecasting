@@ -79,10 +79,12 @@ demand_forecasting/
 
 ---
 ## Установка
-```bash
+
 # Клонировать репозиторий
-git clone <repository-url> -> cd demand_forecasting
-```
+```git clone https://github.com/Vexelll/DemandForecasting.git``` -> ```cd demand_forecasting```
+
+# Создать и активировать виртуальное окружение
+```python -m venv venv```(**Для Windows**: ```venv\Scripts\activate```)
 
 # Установить зависимости
 ```pip install -r requirements.txt```
@@ -93,5 +95,6 @@ git clone <repository-url> -> cd demand_forecasting
 # Быстрый старт
 1. **Инициализировать Airflow**: ```python scripts/run_airflow.py```
 2. **Открыть Airflow UI**: ```http://localhost:8080```
-3. **Запустить дашборд**: python src/visualization/dashboard.py ```# Доступен по адресу: http://localhost:8050```
+3. **Запустить дашборд**: ```python src/visualization/dashboard.py``` -> ```http://localhost:8050```
+
 
