@@ -23,7 +23,7 @@ demand_forecasting/
 │   ├── processed/                    # Обработанные данные
 │   │   ├── cleaned_data.csv                   # Очищенные данные
 │   │   ├── final_dataset.csv                  # Данные с признаками
-│   │   └── feature_list.csv                   # Список признаков
+│   │   └── sales_history.pkl                  # Исторические данные
 │   └── outputs/                      # Результаты 
 │       └── predictions.csv                    # Результаты прогнозов
 ├── models/                           
@@ -96,5 +96,6 @@ demand_forecasting/
 1. **Инициализировать Airflow**: ```python scripts/run_airflow.py```
 2. **Открыть Airflow UI**: ```http://localhost:8080```
 3. **Запустить дашборд**: ```python src/visualization/dashboard.py``` -> ```http://localhost:8050```
+
 
 
