@@ -1,4 +1,5 @@
 import pandas as pd
+from pathlib import Path
 from config.settings import DATA_PATH
 
 
@@ -7,10 +8,10 @@ class DataPreprocessor:
     REQUIRED_TRAIN_COLUMNS = ["Store", "Date", "Sales", "Open", "DayOfWeek", "Promo"]
     REQUIRED_STORE_COLUMNS = ["Store", "StoreType", "Assortment"]
 
-    def __init__(self, verbose=False):
+    def __init__(self, verbose: bool = False) -> None:
         self.verbose = verbose
 
-    def load_and_merge_data(self, train_path, store_path):
+    def load_and_merge_data(self, train_path: Path, store_path: Path) -> pd.DataFrame:
         """Загрузка и объединение данных о продажах и информации о магазинах"""
         if self.verbose:
             print(f"Загрузка данных: {train_path}, {store_path}")
@@ -51,13 +52,13 @@ class DataPreprocessor:
 
         return merged_data
 
-    def _validate_dataframe_columns(self, df, required_columns, data_type):
+    def _validate_dataframe_columns(self, df: pd.DataFrame, required_columns: list[str], data_type: str) -> None:
         """Валидация наличия обязательных колонок в DataFrame"""
         missing_columns = [col for col in required_columns if col not in df.columns]
         if missing_columns:
             raise ValueError(f"Отсутствуют обязательные колонки в {data_type} данных: {missing_columns}")
 
-    def clean_data(self, df):
+    def clean_data(self, df: pd.DataFrame) -> pd.DataFrame:
         """Очистка и фильтрация данных для подготовки к анализу"""
         if self.verbose:
             print("Начало очистки данных")
@@ -95,7 +96,7 @@ class DataPreprocessor:
 
         return cleaned_df
 
-    def _process_dates(self, df):
+    def _process_dates(self, df: pd.DataFrame) -> pd.DataFrame:
         """Обработка и валидация колонки с датами"""
         if "Date" not in df.columns:
             if self.verbose:
@@ -116,7 +117,7 @@ class DataPreprocessor:
         except Exception as e:
             raise Exception(f"Ошибка преобразования дат: {e}") from e
 
-    def save_processed_data(self, df, path):
+    def save_processed_data(self, df: pd.DataFrame, path: Path) -> None:
         """Сохранение обработанных данных в csv"""
         try:
             # Создание директории если не существует

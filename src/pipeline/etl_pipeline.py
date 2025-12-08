@@ -1,12 +1,15 @@
 import pandas as pd
 import joblib
+import numpy as np
+from pathlib import Path
+from typing import Tuple, Optional, List
 from src.data.preprocessing import DataPreprocessor
 from src.features.feature_engineering import FeatureEngineer
 from src.data.history_manager import SalesHistoryManager
 from config.settings import MODELS_PATH, DATA_PATH
 
 class ETLPipeline:
-    def __init__(self, model_path=None):
+    def __init__(self, model_path: Optional[Path] = None) -> None:
         if model_path is None:
             model_path = MODELS_PATH / "lgbm_final_model.pkl"
 
@@ -17,10 +20,10 @@ class ETLPipeline:
         self.preprocessor = DataPreprocessor()
         self.feature_engineer = FeatureEngineer()
         self.history_manager = SalesHistoryManager()
-        self.cleaned_data = None
-        self.processed_data = None
+        self.cleaned_data: Optional[pd.DataFrame] = None
+        self.processed_data: Optional[pd.DataFrame] = None
 
-    def extract(self, new_data_path, stores_data_path):
+    def extract(self, new_data_path: Path, stores_data_path: Path) -> pd.DataFrame:
         """Извлечение и валидация исходных данных"""
         print("Извлечение данных...")
 
@@ -37,7 +40,7 @@ class ETLPipeline:
             print(f"Ошибка извлечения данных: {e}")
             raise
 
-    def transform(self, data):
+    def transform(self, data: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
         """Преобразование данных: очистка, feature engineering, обновление истории"""
         print("Преобразование данных...")
 
@@ -95,7 +98,7 @@ class ETLPipeline:
 
         return final_data, feature_columns
 
-    def load_predictions(self, predictions, output_path):
+    def load_predictions(self, predictions: np.ndarray, output_path: Path) -> pd.DataFrame:
         """Сохранение прогнозов и метаданных"""
         print("Сохранение прогнозов")
 
@@ -136,7 +139,7 @@ class ETLPipeline:
             print(f"Ошибка сохранения прогнозов: {e}")
             raise
 
-    def run_pipeline(self, new_data_path, store_data_path, output_path):
+    def run_pipeline(self, new_data_path: Path, store_data_path: Path, output_path: Path) -> pd.DataFrame:
         """Запуск полного ETL-пайплайна"""
         print("Запуск ETL-пайплайна прогнозирования спроса")
 

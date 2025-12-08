@@ -6,6 +6,8 @@ import optuna
 import joblib
 import pandas as pd
 import logging
+from pathlib import Path
+from typing import Dict, Any, Optional, Tuple, List
 from sklearn.model_selection import TimeSeriesSplit
 from src.models.base_model import BaseModels
 from config.settings import DATA_PATH, MODELS_PATH, REPORTS_PATH, all_stores_time_split
@@ -13,13 +15,13 @@ from config.settings import DATA_PATH, MODELS_PATH, REPORTS_PATH, all_stores_tim
 class LGBMModel(BaseModels):
     def __init__(self):
         super().__init__()
-        self.model = None
-        self.best_params = None
-        self.study = None
-        self.feature_names = []
+        self.model: Optional[lgb.LGBMRegressor] = None
+        self.best_params: Optional[Dict[str, Any]] = None
+        self.study: Optional[optuna.Study] = None
+        self.feature_names: List[str] = []
         self.logger = logging.getLogger("lgbm_model")
 
-    def _validate_input_data(self, X_train, X_test, y_train, y_test):
+    def _validate_input_data(self, X_train: pd.DataFrame, X_test: pd.DataFrame, y_train: pd.Series, y_test: pd.Series) -> None:
         """Валидация входных данных для обучения"""
         if X_train is None or X_test is None or y_train is None or y_test is None:
             raise ValueError("Все входные данные должны быть предоставлены")
@@ -33,7 +35,7 @@ class LGBMModel(BaseModels):
         if len(X_train) < 100:
             self.logger.warning("Малый объем обучающих данных может повлиять на качество модели")
 
-    def objective(self, trial, X, y):
+    def objective(self, trial: optuna.Trial, X: pd.DataFrame, y: pd.Series) -> float:
         """Функция для оптимизации гиперпараметров LightGBM"""
         params = {
             "objective": "regression",
@@ -81,7 +83,7 @@ class LGBMModel(BaseModels):
 
         return np.mean(scores)
 
-    def optimize_hyperparameters(self, X, y, n_trials=70):
+    def optimize_hyperparameters(self, X: pd.DataFrame, y: pd.Series, n_trials: int = 70) -> Dict[str, Any]:
         """Оптимизация гиперпараметров с использованием Optuna"""
         self.logger.info("Начало оптимизации гиперпараметров LightGBM")
 
@@ -105,7 +107,7 @@ class LGBMModel(BaseModels):
 
         return self.best_params
 
-    def train_final_model(self, X_train, X_test, y_train, y_test):
+    def train_final_model(self, X_train: pd.DataFrame, X_test: pd.DataFrame, y_train: pd.Series, y_test: pd.Series) -> Tuple[Dict[str, float], np.ndarray]:
         """Обучение финальной модели на лучших параметрах"""
 
         # Валидация входных данных
@@ -148,7 +150,7 @@ class LGBMModel(BaseModels):
 
         return metrics, y_pred
 
-    def _save_model_and_metrics(self, metrics, y_test, y_pred):
+    def _save_model_and_metrics(self, metrics: Dict[str, float], y_test: pd.Series, y_pred: np.ndarray) -> None:
         """Сохранение модели и метрик в файлы"""
         try:
             # Сохранение модели
@@ -182,7 +184,7 @@ class LGBMModel(BaseModels):
             self.logger.error(f"Ошибка сохранения модели и метрик: {e}")
             raise
 
-    def plot_feature_importance(self, feature_names, top_n=20):
+    def plot_feature_importance(self, feature_names: List[str], top_n: int = 20) -> None:
         """Визуализация важности признаков"""
         if self.model is None:
             self.logger.warning("Модель не обучена, невозможно построить важность признаков")
@@ -210,7 +212,7 @@ class LGBMModel(BaseModels):
 
         self.logger.info(f"График важности признаков сохранен: {importance_path}")
 
-    def run_complete_training(self, data_path=None, train_time_ratio=0.8):
+    def run_complete_training(self, data_path: Optional[Path] = None, train_time_ratio: float = 0.8) -> Tuple[Optional[str, float], Optional[np.ndarray]]:
         """Полный цикл обучения модели для использования в пайплайне"""
         try:
             if data_path is None:
@@ -240,7 +242,7 @@ class LGBMModel(BaseModels):
             self.logger.error(f"Ошибка выполнения полного цикла обучения: {e}")
             raise
 
-    def load_model(self, model_path=None):
+    def load_model(self, model_path: Optional[Path] = None) -> lgb.LGBMRegressor:
         """Загрузка предварительно обученной модели"""
         if model_path is None:
             model_path = DATA_PATH / "models/lgbm_final_model.pkl"
@@ -253,7 +255,7 @@ class LGBMModel(BaseModels):
         self.logger.info(f"Модель загружена: {model_path}")
         return self.model
 
-    def predict(self, X):
+    def predict(self, X: pd.DataFrame) -> np.ndarray:
         """Прогнозирование с использованием обученной модели"""
         if self.model is None:
             raise ValueError("Модель не обучена. Сначала выполните обучение или загрузку модели.")

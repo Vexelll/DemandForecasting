@@ -1,0 +1,11 @@
+.venv/
+airflow/logs/
+airflow/plugins/
+airflow/airflow.db
+airflow/airflow.cfg
+airflow/airflow.db-shm
+airflow/airflow.db-wal
+airflow/simple_auth_manager_passwords.json.generated
+__pycache__/
+.idea/
+.gitignore
