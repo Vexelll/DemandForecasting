@@ -1,11 +1,12 @@
 from datetime import datetime
+from typing import Dict, Any
 from config.settings import DATA_PATH, MODELS_PATH
 
 
 class DataQualityChecker:
     """Проверяет, нужно ли обрабатывать данные и переобучать модель"""
 
-    def has_new_data(self):
+    def has_new_data(self) -> bool:
         """Проверяет, есть ли новые данные"""
         train_path = DATA_PATH / "raw/train.csv"
 
@@ -16,7 +17,7 @@ class DataQualityChecker:
         train_mtime = datetime.fromtimestamp(train_path.stat().st_mtime)
         return train_mtime.date() == datetime.now().date()
 
-    def needs_retraining(self):
+    def needs_retraining(self) -> bool:
         """Проверяет, нужно ли переобучать модель"""
         model_path = MODELS_PATH / "lgbm_final_model.pkl"
         data_path = DATA_PATH / "processed/final_dataset.csv"
@@ -40,7 +41,7 @@ class DataQualityChecker:
             # При любой ошибке - переобучаем
             return True
 
-    def check_data_files(self):
+    def check_data_files(self) -> Dict[str, Dict[str, Any]]:
         """Быстрая проверка всех нужных файлов"""
         files_to_check = {
             "train.csv": DATA_PATH / "raw/train.csv",

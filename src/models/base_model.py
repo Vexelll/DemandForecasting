@@ -4,6 +4,7 @@ from pandas.plotting import autocorrelation_plot
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 import matplotlib.pyplot as plt
 import pandas as pd
+from typing import Dict, Any, List, Optional, Union
 from config.settings import REPORTS_PATH
 import json
 
@@ -11,35 +12,35 @@ import json
 plt.style.use("seaborn-v0_8-whitegrid")
 
 class BaseModels:
-    def __init__(self):
-        self.metrics = {}
-        self.feature_importance = None
-        self.model = None
+    def __init__(self) -> None:
+        self.metrics: Dict[str, Any] = {}
+        self.feature_importance: Optional[pd.DataFrame] = None
+        self.model: Optional[Any] = None
 
-    def calculate_metrics(self, y_true, y_pred):
+    def calculate_metrics(self, y_true: Union[np.ndarray, pd.Series, List[float]], y_pred: Union[np.ndarray, pd.Series, List[float]]) -> Dict[str, float]:
         """Расчет метрик качества"""
-        y_true = np.array(y_true)
-        y_pred = np.array(y_pred)
+        y_true_array = np.array(y_true)
+        y_pred_array = np.array(y_pred)
 
-        if len(y_true) != len(y_pred):
+        if len(y_true_array) != len(y_pred_array):
             raise ValueError("Длины y_true и y_pred не совпадают")
 
-        mae = mean_absolute_error(y_true, y_pred)
-        rmse = np.sqrt(mean_squared_error(y_true, y_pred))
-        mape = np.mean(np.abs((y_true - y_pred) / np.maximum(y_true, 1))) * 100
-        r2 = r2_score(y_true, y_pred)
-        max_err = np.max(np.abs(y_true - y_pred))
+        mae = mean_absolute_error(y_true_array, y_pred_array)
+        rmse = np.sqrt(mean_squared_error(y_true_array, y_pred_array))
+        mape = np.mean(np.abs((y_true_array - y_pred_array) / np.maximum(y_true_array, 1))) * 100
+        r2 = r2_score(y_true_array, y_pred_array)
+        max_err = np.max(np.abs(y_true_array - y_pred_array))
 
         return {
-            "MAE": mae,
-            "RMSE": rmse,
-            "MAPE": mape,
-            "R2": r2,
-            "MaxError": max_err,
+            "MAE": float(mae),
+            "RMSE": float(rmse),
+            "MAPE": float(mape),
+            "R2": float(r2),
+            "MaxError": float(max_err),
             "Samples": len(y_true)
         }
 
-    def plot_predictions(self, y_true, y_pred, title, store_id=None):
+    def plot_predictions(self, y_true: Union[np.ndarray, pd.Series, List[float]], y_pred: Union[np.ndarray, pd.Series, List[float]], title: str, store_id: Optional[int] = None) -> None:
         """Визуализация прогнозов"""
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), gridspec_kw={"height_ratios": [3, 1]})
 
@@ -91,7 +92,7 @@ class BaseModels:
         plt.savefig(REPORTS_PATH / filename, dpi=300, bbox_inches="tight", facecolor="white")
         plt.close()
 
-    def plot_residuals(self, y_true, y_pred, title):
+    def plot_residuals(self, y_true: Union[np.ndarray, pd.Series, List[float]], y_pred: Union[np.ndarray, pd.Series, List[float]], title: str) -> None:
         """Анализ остатков"""
         residuals = np.array(y_true) - np.array(y_pred)
         metrics = self.calculate_metrics(y_true, y_pred)
@@ -153,7 +154,7 @@ class BaseModels:
         plt.savefig(REPORTS_PATH / filename, dpi=300, bbox_inches="tight", facecolor="white")
         plt.close()
 
-    def plot_feature_importance(self, feature_names, importance_scores, top_n=20):
+    def plot_feature_importance(self, feature_names: List[str], importance_scores: np.ndarray, top_n: int = 20) -> None:
         """Визуализация важности признаков"""
         importance_df = pd.DataFrame({
             "feature": feature_names,
@@ -198,7 +199,7 @@ class BaseModels:
         plt.savefig(REPORTS_PATH / filename, dpi=300, bbox_inches="tight", facecolor="white")
         plt.close()
 
-    def plot_metrics_comparison(self, metrics_dict, title="Сравнение моделей"):
+    def plot_metrics_comparison(self, metrics_dict: Dict[str, Dict[str, float]], title: str ="Сравнение моделей") -> None:
         """Сравнение метрик нескольких моделей"""
         models = list(metrics_dict.keys())
         metrics_to_plot = ["MAPE", "R2", "RMSE"]
@@ -236,9 +237,8 @@ class BaseModels:
         plt.savefig(REPORTS_PATH / filename, dpi=300, bbox_inches="tight", facecolor="white")
         plt.close()
 
-    def save_metrics(self, metrics, filename="model_metrics.json"):
+    def save_metrics(self, metrics: Dict[str, Any], filename: str = "model_metrics.json") -> None:
         """Сохранение метрик в файл"""
-
         metrics_serializable = {}
         for key, value in metrics.items():
             if isinstance(value, (np.integer, np.floating)):
@@ -248,16 +248,3 @@ class BaseModels:
 
         with open(REPORTS_PATH / filename, "w", encoding="utf-8") as f:
             json.dump(metrics_serializable, f, indent=2, ensure_ascii=False)
-
-    def validate_inputs(self, X, y):
-        """Валидация входных данных"""
-        if X is None or y is None:
-            raise ValueError("X и y не могут быть None")
-
-        if len(X) != len(y):
-            raise ValueError(f"Несоответствие размеров: X({len(X)}) != y({len(y)})")
-
-        if len(X) == 0:
-            raise ValueError("Пустые данные")
-
-        return True

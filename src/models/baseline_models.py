@@ -3,22 +3,24 @@ import json
 from sklearn.linear_model import LinearRegression
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.dummy import DummyRegressor
+from pathlib import Path
+from typing import Dict, Any, Optional, Tuple
 from src.models.base_model import BaseModels
 from config.settings import DATA_PATH, all_stores_time_split, REPORTS_PATH
 
 
 class BaselineModels(BaseModels):
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.models = {
             "LinearRegression": LinearRegression(),
             "RandomForest": RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1),
             "MeanBaseline": DummyRegressor(strategy="mean")
         }
-        self.trained_models = {}
-        self.results = {}
+        self.trained_models: Dict[str, Any] = {}
+        self.results: Dict[str, Dict[str, Any]] = {}
 
-    def _validate_input_data(self, X_train, X_test, y_train, y_test):
+    def _validate_input_data(self, X_train: pd.DataFrame, X_test: pd.DataFrame, y_train: pd.Series, y_test: pd.Series) -> None:
         """Валидация входных данных для обучения"""
         if X_train is None or X_test is None or y_train is None or y_test is None:
             raise ValueError("Все входные данные должны быть предоставлены")
@@ -32,7 +34,7 @@ class BaselineModels(BaseModels):
         if len(X_train) < 100:
             print("Предупреждение: малый объем обучающих данных может повлиять на качество моделей")
 
-    def _load_dataset(self, data_path):
+    def _load_dataset(self, data_path: Path) -> pd.DataFrame:
         """Загрузка и валидация набора данных"""
         if not data_path.exists():
             raise FileNotFoundError(f"Файл с данными не найден: {data_path}")
@@ -50,7 +52,7 @@ class BaselineModels(BaseModels):
 
         return final_data
 
-    def train_and_evaluate(self, X_train, X_test, y_train, y_test):
+    def train_and_evaluate(self, X_train: pd.DataFrame, X_test: pd.DataFrame, y_train: pd.Series, y_test: pd.Series) -> Dict[str, Dict[str, Any]]:
         """Обучение и оценка базовых моделей"""
 
         # Валидация входных данных
@@ -100,7 +102,7 @@ class BaselineModels(BaseModels):
 
         return results
 
-    def _save_results(self, results, training_times):
+    def _save_results(self, results: Dict[str, Dict[str, Any]], training_times: Dict[str, float]) -> None:
         """Сохранение результатов обучения в структурированном виде"""
         try:
             # Преобразование результатов в DataFrame
@@ -136,7 +138,7 @@ class BaselineModels(BaseModels):
             print(f"Ошибка сохранения результатов: {e}")
             raise
 
-    def _print_summary_report(self, results, training_times):
+    def _print_summary_report(self, results: Dict[str, Dict[str, Any]], training_times: Dict[str, float]) -> None:
         """Вывод сводного отчета по всем моделям"""
         print("СВОДНЫЙ ОТЧЕТ ПО БАЗОВЫМ МОДЕЛЯМ")
 
@@ -158,7 +160,7 @@ class BaselineModels(BaseModels):
                       f"Время={metrics["training_time_seconds"]:.2f}c")
         print("Нет успешно обученных моделей для анализа")
 
-    def run_complete_analysis(self, data_path=None, train_time_ratio=0.8):
+    def run_complete_analysis(self, data_path: Optional[Path] = None, train_time_ratio: float = 0.8) -> Dict[str, Dict[str, Any]]:
         """Полный цикл анализа базовых моделей"""
         try:
             if data_path is None:
@@ -179,7 +181,7 @@ class BaselineModels(BaseModels):
             print(f"Ошибка выполнения анализа базовых моделей: {e}")
             raise
 
-    def get_best_model(self):
+    def get_best_model(self) -> Tuple[Any, str]:
         """Получение лучшей модели на основе метрик"""
         if not self.results:
             raise ValueError("Анализ не был выполнен. Сначала запустите run_complete_analysis()")
@@ -191,7 +193,7 @@ class BaselineModels(BaseModels):
         best_model_name = min(valid_results.items(), key=lambda x: x[1]["MAPE"])[0]
         return self.trained_models[best_model_name], best_model_name
 
-    def get_model_comparison_data(self):
+    def get_model_comparison_data(self) -> pd.DataFrame:
         """Получение данных для сравнения моделей в виде DataFrame"""
         if not self.results:
             raise ValueError("Анализ не был выполнен. Сначала запустите run_complete_analysis()")

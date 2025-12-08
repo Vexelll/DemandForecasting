@@ -1,24 +1,26 @@
 import pandas as pd
 import numpy as np
 import joblib
-from datetime import timedelta
+from typing import Optional
+from datetime import timedelta, datetime
+from pathlib import Path
 from config.settings import DATA_PATH
 from src.data.preprocessing import DataPreprocessor
 
 class SalesHistoryManager:
     REQUIRED_COLUMNS = ["Store", "Date", "Sales", "DayOfWeek", "Promo", "StateHoliday", "SchoolHoliday"]
 
-    def __init__(self, history_file="sales_history.pkl"):
+    def __init__(self, history_file: str = "sales_history.pkl") -> None:
         self.history_file = DATA_PATH / "processed" / history_file
         self.history = self._load_history()
         self._ensure_data_integrity()
 
-    def _ensure_data_integrity(self):
+    def _ensure_data_integrity(self) -> None:
         """Гарантирует целостность исторических данных"""
         if self.history is not None and not self.history.empty:
             self._validate_data(self.history)
 
-    def _validate_data(self, data):
+    def _validate_data(self, data: pd.DataFrame) -> None:
         """Валидация данных на наличие обязательных колонок и корректность типов"""
         if data is None or len(data) == 0:
             raise ValueError("Данные не могут быть None или пустыми")
@@ -35,7 +37,7 @@ class SalesHistoryManager:
             except Exception as e:
                 raise ValueError(f"Некорректный формат дат: {e}")
 
-    def _load_history(self):
+    def _load_history(self) -> pd.DataFrame:
         """Загрузка истории из файла"""
         if self.history_file.exists():
             try:
@@ -54,7 +56,7 @@ class SalesHistoryManager:
             print("Создание новой базы исторических данных...")
             return pd.DataFrame()
 
-    def _save_history(self):
+    def _save_history(self) -> None:
         """Сохранение истории в файл"""
         try:
             if self.history is not None and not self.history.empty:
@@ -67,7 +69,7 @@ class SalesHistoryManager:
             print(f"Ошибка сохранения исторических данных в {self.history_file}: {e}")
             raise
 
-    def update_history(self, new_data):
+    def update_history(self, new_data: pd.DataFrame) -> None:
         """Обновление истории новыми данными"""
         if len(new_data) == 0:
             print("Предупреждение: попытка обновления пустыми данными")
@@ -94,7 +96,7 @@ class SalesHistoryManager:
         self._save_history()
         print(f"История обновлена: {len(new_data_clean)} новых записей, всего: {len(self.history)}")
 
-    def get_store_history(self, store_id, days_back=365, end_date=None):
+    def get_store_history(self, store_id: int, days_back: int = 365, end_date: Optional[str | datetime] = None) -> pd.DataFrame:
         """Получение истории продаж для конкретного магазина"""
         if self.history is None or self.history.empty:
             return pd.DataFrame()
@@ -120,7 +122,7 @@ class SalesHistoryManager:
 
         return filtered_history
 
-    def get_latest_sales(self, store_id, days=28, end_date=None):
+    def get_latest_sales(self, store_id: int, days: int = 28, end_date: Optional[str | datetime] = None) -> Optional[pd.Series]:
         """Получение последних продаж для магазина до указанной даты"""
         store_history = self.get_store_history(store_id, days_back=days + 7, end_date=end_date)
 
@@ -143,7 +145,7 @@ class SalesHistoryManager:
 
         return recent_sales
 
-    def calculate_lags(self, store_id, target_date, lag_days=[1, 7, 14, 28]):
+    def calculate_lags(self, store_id: int, target_date: str | datetime, lag_days: list[int] = [1, 7, 14, 28]) -> dict[str, float]:
         """Расчет лаговых признаков"""
         lags = {}
         target_date = pd.to_datetime(target_date)
@@ -187,7 +189,7 @@ class SalesHistoryManager:
 
         return lags
 
-    def get_history_stats(self):
+    def get_history_stats(self) -> dict[str, int | str | float]:
         """Статистика по конкретному магазину на определенную дату"""
         if self.history is None or self.history.empty:
             return {
@@ -210,7 +212,7 @@ class SalesHistoryManager:
 
         return stats
 
-    def get_store_stats(self, store_id, end_date=None):
+    def get_store_stats(self, store_id: int, end_date: Optional[str | datetime] = None) -> dict[str, int | str | float]:
         """Статистика по конкретному магазину на определенную дату"""
         store_history = self.get_store_history(store_id, days_back=365, end_date=end_date)
 
@@ -229,7 +231,7 @@ class SalesHistoryManager:
 
         return stats
 
-    def cleanup_old_data(self, cutoff_date):
+    def cleanup_old_data(self, cutoff_date: str | datetime) -> int:
         """Очистка устаревших данных"""
         if self.history is None or self.history.empty:
             print("Нет данных для очистки")
@@ -247,7 +249,7 @@ class SalesHistoryManager:
 
         return removed_count
 
-    def export_history(self, export_path=None):
+    def export_history(self, export_path: Optional[Path] = None) -> bool:
         """Экспорт исторических данных в CSV"""
         if self.history is None or self.history.empty:
             print("Нет данных для экспорта")
@@ -265,7 +267,7 @@ class SalesHistoryManager:
             return False
 
 
-def initialize_sales_history(data_path=None):
+def initialize_sales_history(data_path: Optional[Path] = None) -> SalesHistoryManager:
         if data_path is None:
             data_path = DATA_PATH / "raw/train.csv"
 
