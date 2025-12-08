@@ -8,3 +8,4 @@ airflow/airflow.db-wal
 airflow/simple_auth_manager_passwords.json.generated
 __pycache__/
 .idea/
+.gitignore
