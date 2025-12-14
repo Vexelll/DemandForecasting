@@ -88,47 +88,58 @@ document.addEventListener("DOMContentLoaded", function () {
     }
 
     function setupAutoRefresh() {
-        let autoRefreshInterval;
+        let autoRefreshInterval = null;
+        let lastAutoRefresh = 0;
 
         function startAutoRefresh() {
-            // Останавливаем предыдущий интервал если есть
-            if (autoRefreshInterval) {
-                clearInterval(autoRefreshInterval);
-            }
-
-            // Запускаем новый интервал (5 минут)
-            autoRefreshInterval = setInterval(() => {
-                const refreshBtn = document.getElementById("refresh-btn");
-                if (refreshBtn) {
-                    refreshBtn.click();
-                    console.log("Автообновление: " + new Date().toLocaleString());
-                }
-            }, 300000);
-        }
-
-        function stopAutoRefresh() {
+            // Очищаем существующий интервал
             if (autoRefreshInterval) {
                 clearInterval(autoRefreshInterval);
                 autoRefreshInterval = null;
             }
+
+            // Запускаем новый интервал
+            autoRefreshInterval = setInterval(() => {
+                const now = Date.now();
+
+                // Не обновляем чаще чем раз в 10 секунд
+                if (now - lastAutoRefresh < 10000) {
+                    return;
+                }
+
+                const refreshBtn = document.getElementById("refresh-btn");
+                if (refreshBtn && !refreshBtn.disabled) {
+                    lastAutoRefresh = now;
+
+                    // Безопасный клик с проверкой
+                    try {
+                        refreshBtn.click();
+                        console.log("Автообновление: " + new Date().toLocaleString());
+                    } catch (error) {
+                        console.error("Ошибка автообновления:", error);
+                    }
+                }
+            }, 300000);  // 5 минут
         }
 
-        // Запуск автообновления
-        startAutoRefresh();
-
-        // Остановка при взаимодействии пользователя
-        document.addEventListener("mousemove", function () {
-            stopAutoRefresh();
-            startAutoRefresh();
+        // Очистка при уходе со страницы
+        window.addEventListener('beforeunload', function() {
+            if (autoRefreshInterval) {
+                clearInterval(autoRefreshInterval);
+                autoRefreshInterval = null;
+            }
         });
 
-        // Остановка при фокусе на элементах ввода
-        document.addEventListener("focusin", function() {
-            stopAutoRefresh();
-        });
-
-        document.addEventListener("focusout", function() {
-            startAutoRefresh();
+        // Очистка при скрытии страницы
+        document.addEventListener('visibilitychange', function() {
+            if (document.hidden) {
+                if (autoRefreshInterval) {
+                    clearInterval(autoRefreshInterval);
+                    autoRefreshInterval = null;
+                }
+            } else {
+                startAutoRefresh();
+            }
         });
     }
 

@@ -7,7 +7,7 @@ import joblib
 import pandas as pd
 import logging
 from pathlib import Path
-from typing import Dict, Any, Optional, Tuple, List
+from typing import Dict, Any, Optional, Tuple, List, Union
 from sklearn.model_selection import TimeSeriesSplit
 from src.models.base_model import BaseModels
 from config.settings import DATA_PATH, MODELS_PATH, REPORTS_PATH, all_stores_time_split
@@ -98,7 +98,7 @@ class LGBMModel(BaseModels):
             "metric": "mape",
             "verbosity": -1,
             "boosting_type": "gbdt",
-            "n_estimators": 8000,
+            "n_estimators": 20000,
             "random_state": 42
         })
 
@@ -212,7 +212,7 @@ class LGBMModel(BaseModels):
 
         self.logger.info(f"График важности признаков сохранен: {importance_path}")
 
-    def run_complete_training(self, data_path: Optional[Path] = None, train_time_ratio: float = 0.8) -> Tuple[Optional[str, float], Optional[np.ndarray]]:
+    def run_complete_training(self, data_path: Optional[Path] = None, train_time_ratio: float = 0.8) -> Tuple[Union[str, float, None], Optional[np.ndarray]]:
         """Полный цикл обучения модели для использования в пайплайне"""
         try:
             if data_path is None:

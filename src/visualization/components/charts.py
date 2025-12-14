@@ -7,14 +7,19 @@ from config.settings import REPORTS_PATH
 
 
 def create_forecast_chart(data):
-    """График прогнозов vs факт с улучшенной визуализацией"""
+    """График прогнозов vs факт"""
     if len(data) == 0:
         return create_empty_chart("Нет данных для отображения")
+
+    required_cols = ["Date", "ActualSales", "PredictedSales"]
+    missing_cols = [col for col in required_cols if col not in data.columns]
+    if missing_cols:
+        return create_empty_chart(f"Отсутствуют данные: {", ".join(missing_cols)}")
 
     fig = go.Figure()
 
     # Сортировка по дате
-    data = data.sort_values("Date")
+    data = data.sort_values("Date").copy()
 
     # Фактические продажи
     fig.add_trace(go.Scatter(
@@ -106,19 +111,30 @@ def create_forecast_chart(data):
 
 
 def create_error_distribution(data):
-    """Распределение ошибок прогнозирования с улучшенной статистикой"""
+    """Распределение ошибок прогнозирования"""
     if len(data) == 0:
         return create_empty_chart("Нет данных для отображения")
 
     errors = data["ActualSales"] - data["PredictedSales"]
-    error_pct = (errors / data["ActualSales"] * 100).round(2)
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        error_pct = np.where(
+            data["ActualSales"] > 0,
+            (errors / data["ActualSales"] * 100),
+            0 # Если продажи 0, ошибка = 0%
+        )
+
+    error_pct = error_pct[np.isfinite(error_pct)]
+
+    if len(error_pct) == 0:
+        return create_empty_chart("Нет данных для анализа ошибок")
 
     fig = go.Figure()
 
     # Гистограмма ошибок
     fig.add_trace(go.Histogram(
         x=error_pct,
-        nbinsx=30,
+        nbinsx=min(30, len(error_pct)),
         name="Распределение ошибок",
         marker_color="#3498db",
         opacity=0.7,
@@ -212,10 +228,16 @@ def create_error_distribution(data):
 
 
 def create_store_comparison(full_data, selected_store, start_date, end_date):
-    """Сравнение магазинов с улучшенной визуализацией"""
+    """Сравнение магазинов"""
     # Проверяем что даты не None
     if start_date is None or end_date is None:
         return create_empty_chart("Выберите диапазон дат для сравнения")
+
+    try:
+        start_date = pd.to_datetime(start_date)
+        end_date = pd.to_datetime(end_date)
+    except Exception as e:
+        return create_empty_chart(f"Ошибка в формате дат: {e}")
 
     filtered_data = full_data[
         (full_data["Date"] >= start_date) &
@@ -225,14 +247,23 @@ def create_store_comparison(full_data, selected_store, start_date, end_date):
     if len(filtered_data) == 0:
         return create_empty_chart("Нет данных для сравнения")
 
-    # Группировка по магазинам
-    store_stats = filtered_data.groupby("Store").agg({
+    grouped = filtered_data.groupby("Store").agg({
         "ActualSales": ["mean", "std", "sum"],
         "PredictedSales": "mean"
+    })
+
+    # Преобразование
+    store_stats = pd.DataFrame({
+        "AvgSales": grouped[("ActualSales", "mean")],
+        "StdSales": grouped[("ActualSales", "std")],
+        "TotalSales": grouped[("ActualSales", "sum")],
+        "AvgPredicted": grouped[("PredictedSales", "mean")]
     }).round(2)
 
-    store_stats.columns = ["AvgSales", "StdSales", "TotalSales", "AvgPredicted"]
     store_stats = store_stats.sort_values("AvgSales", ascending=False).head(15)
+
+    if len(store_stats) == 0:
+        return create_empty_chart("Нет данных для сравнения магазинов")
 
     # Расчет точности для каждого магазина
     store_accuracy = []

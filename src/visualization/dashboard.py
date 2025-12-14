@@ -1,3 +1,4 @@
+import dash
 from dash import Dash, Input, Output, dcc
 import pandas as pd
 import numpy as np
@@ -19,18 +20,31 @@ class ForecastingDashboard:
     def __init__(self):
         self.app = Dash(__name__)
         self.data = self.load_data()
+        self._last_update_time = datetime.now()
         self.setup_layout()
         self.setup_callbacks()
+
+    def get_last_update_time(self):
+        """Получение времени последнего обновления"""
+        return self._last_update_time
+
+    def set_last_update_time(self, timestamp = None):
+        """Сохранение времени обновления"""
+        if timestamp is None:
+            timestamp = datetime.now()
+        self._last_update_time = timestamp
 
     def load_data(self):
         """Загрузка данных для дашборда"""
         data_path = DATA_PATH / "outputs/predictions.csv"
 
-        # Проверка существования файла
-        if os.path.exists(data_path):
+        # Проверка существования файла и не пустой ли он
+        if os.path.exists(data_path) and data_path.stat().st_size > 0:
             try:
                 data = pd.read_csv(data_path, parse_dates=["Date"])
-                print(f"Загружено данных: {len(data)} записей")
+
+                if len(data) == 0:
+                    print("Файл с данными пуст. Используются демо-данные.")
 
                 # Проверка необходимых колонок
                 required_columns = ["Store", "Date", "PredictedSales", "ActualSales"]
@@ -40,13 +54,17 @@ class ForecastingDashboard:
                     print(f"Внимание: отсутствуют колонки {missing_columns}. Используются демо-данные.")
                     return self.create_demo_data()
 
+                print(f"Данные успешно загружены: {len(data)} записей")
                 return data
 
+            except pd.errors.EmptyDataError:
+                print("Ошибка: файл данных пуст. Используются демо-данные.")
+                return self.create_demo_data()
             except Exception as e:
                 print(f"Ошибка загрузки файла: {e}. Используются демо-данные.")
                 return self.create_demo_data()
         else:
-            print(f"Файл не найден: {data_path}. Используются демо-данные.")
+            print(f"Файл не найден или пуст: {data_path}. Используются демо-данные.")
             return self.create_demo_data()
 
     def create_demo_data(self):
@@ -110,10 +128,23 @@ class ForecastingDashboard:
                     start_date = self.data["Date"].min()
                     end_date = self.data["Date"].max()
 
-            # Перезагрузка данных при нажатии кнопки обновления
-            if n_clicks and n_clicks > 0:
-                self.data = self.load_data()
-                print(f"Данные обновлены. Записей: {len(self.data)}")
+            ctx = dash.callback_context
+
+            # Проверяем, что событие пришло именно от кнопки обновления
+            if ctx.triggered:
+                trigger_id = ctx.triggered[0]["prop_id"].split(".")[0]
+
+                if trigger_id == "refresh-btn":
+                    # Проверяем, не слишком ли часто обновляем
+                    current_time = datetime.now()
+                    last_update = self.get_last_update_time()
+
+                    if (current_time - last_update).total_seconds() < 5: # Не чаще чем раз в 5 секунд
+                        print("Предупреждение: слишком частая перезагрузка данных")
+                    else:
+                        self.data = self.load_data()
+                        self.set_last_update_time(current_time)
+                        print(f"Данные обновлены. Записей: {len(self.data)}")
 
             # Фильтрация данных
             filtered_data = self.data.copy()
@@ -129,12 +160,11 @@ class ForecastingDashboard:
                 ]
 
             # Проверка наличия данных после фильтрации
-            if len(filtered_data) == 0:
-                # Возвращаем пустые графики если нет данных
-                empty_metric = create_metric_cards("Нет данных", "-", "#95a5a6", "Выберите другие фильтры")
-                empty_fig = create_empty_chart("Нет данных для выбранных фильтров")
+            if start_date is None or end_date is None:
+                # Возвращаем пустые графики
+                empty_fig = create_empty_chart("Выберите диапазон дат")
                 last_update = f"Последнее обновление: {datetime.now().strftime("%H:%M:%S")}"
-                return [empty_metric, empty_metric, empty_metric, empty_metric, empty_fig, empty_fig, empty_fig, empty_fig, last_update]
+                return ["-", "-", "-", "-", empty_fig, empty_fig, empty_fig, empty_fig, "", last_update]
 
             # Расчет метрик
             metrics = calculate_metrics(filtered_data)

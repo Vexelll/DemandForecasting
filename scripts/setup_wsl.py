@@ -5,6 +5,7 @@ from pathlib import Path
 
 class WSLSetup:
     """Класс для настройки WSL окружения"""
+
     def __init__(self):
         self.project_root = Path(__file__).parent.parent
         self.wsl_path = self._convert_to_wsl_path(self.project_root)
@@ -13,35 +14,40 @@ class WSLSetup:
         """Конвертация Windows пути в WSL путь"""
         path_str = str(windows_path)
 
-        # Убираем префикс пути Windows
-        if path_str.startswith("C:\\"):
-            return "/mnt/c/" + path_str[3:].replace("\\", "/")
-        elif path_str.startswith("D:\\"):
-            return "/mnt/d/" + path_str[3:].replace("\\", "/")
-        elif path_str.startswith("E:\\"):
-            return "/mnt/e/" + path_str[3:].replace("\\", "/")
-        elif ":" in path_str:
+        # Конвертация для любых дисков
+        if ":" in path_str and path_str[1:3] == ":\\":
             drive_letter = path_str[0].lower()
-            return f"/mnt/{drive_letter}/" + path_str[3:].replace("\\", "/")
+            remaining_path = path_str[3:].replace("\\", "/")
+            return f"/mnt/{drive_letter}/{remaining_path}"
         else:
+            # Уже WSL путь или относительный
             return path_str.replace("\\", "/")
 
     def _run_wsl_command(self, command, timeout=900):
         """Выполнение WSL команд"""
         try:
-            subprocess.run(
+            result = subprocess.run(
                 ["wsl", "bash", "-c", command],
                 capture_output=True,
                 text=True,
                 check=False,
                 timeout=timeout
             )
+
+            if result.returncode != 0:
+                print(f"Ошибка выполнения команды: {result.stderr[:200]}")
+                return False
+
             return True
+
+        except subprocess.TimeoutExpired:
+            print(f"Таймаут выполнения команды")
+            return False
         except subprocess.CalledProcessError as e:
             print(f"Ошибка выполнения команды: {e}")
             return False
-        except subprocess.TimeoutExpired:
-            print("Таймаут выполнения команды")
+        except Exception as e:
+            print(f"Неожиданная ошибка: {e}")
             return False
 
     def check_wsl_status(self):
@@ -52,6 +58,7 @@ class WSLSetup:
             subprocess.run(["wsl", "--status"], capture_output=True, check=True, timeout=30)
             print("WSL статус проверен")
             return True
+
         except subprocess.CalledProcessError:
             print("Ошибка проверки WSL")
             return False
@@ -76,7 +83,7 @@ class WSLSetup:
 
         # Устанавливаем зависимости через pip из venv
         command = f"cd {self.wsl_path} && .venv/bin/pip install -r requirements.txt"
-        if not self._run_wsl_command(command, timeout=900):
+        if not self._run_wsl_command(command, timeout=1000):
             return False
 
         print("Python зависимости установлены")

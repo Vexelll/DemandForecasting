@@ -11,21 +11,30 @@ def calculate_metrics(data):
             "data_points": 0
         }
 
-    actual = data["ActualSales"]
-    predicted = data["PredictedSales"]
-
-    # Проверка наличия данных
-    if len(actual) == 0 or len(predicted) == 0:
+    # Проверка наличия колонок
+    if "ActualSales" not in data.columns or "PredictedSales" not in data.columns:
         return {
             "mape": 0, "mae": 0, "rmse": 0,
             "total_sales": 0, "bias": 0, "std_error": 0,
             "data_points": 0
         }
 
+    actual = data["ActualSales"]
+    predicted = data["PredictedSales"]
+
     errors = actual - predicted
 
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ape = np.where(
+            actual > 0,
+            np.abs(errors) / actual * 100,
+            0 # Если продажи 0, то ошибка 0%
+        )
+
+    ape = ape[np.isfinite(ape)]
+
     metrics = {
-        "mape": np.mean(np.abs(errors) / np.maximum(actual, 1)) * 100,
+        "mape": np.mean(ape) if len(ape) > 0 else 0,
         "mae": np.mean(np.abs(errors)),
         "rmse": np.sqrt(np.mean(errors ** 2)),
         "total_sales": actual.sum(),
@@ -35,12 +44,8 @@ def calculate_metrics(data):
     }
 
     # Округление для читаемости
-    metrics["mape"] = round(metrics["mape"], 2)
-    metrics["mae"] = round(metrics["mae"], 2)
-    metrics["rmse"] = round(metrics["rmse"], 2)
-    metrics["total_sales"] = round(metrics["total_sales"], 2)
-    metrics["bias"] = round(metrics["bias"], 2)
-    metrics["std_error"] = round(metrics["std_error"], 2)
+    for key in ["mape", "mae", "rmse", "total_sales", "bias", "std_error"]:
+        metrics[key] = round(metrics[key], 2)
 
     return metrics
 
@@ -91,11 +96,27 @@ def create_metric_cards(metrics):
 
     return [mape_card, mae_card, rmse_card, sales_card]
 
+def format_metric_value(value, is_currency=True, is_percentage=False):
+    """Форматирование значения метрики для отображения"""
+    try:
+        if is_percentage:
+            return f"{float(value):.1f}%"
+        elif is_currency:
+            # Форматирование валюты: 1234567.89 -> 1 234 567.89 €
+            return f"{float(value):,.0f}".replace(",", " ")
+        else:
+            # Числовое значение с разделителями тысяч
+            return f"{float(value):,.0f}".replace(",", " ")
+    except (ValueError, TypeError):
+        return str(value)
+
 
 def create_metric_card(title, value, color, description=None):
-    """Создание отдельной карточки метрики"""
+    """Создание отдельной карточки метрики с форматированием"""
+    formatted_value = format_metric_value(value)
+
     return html.Div([
         html.Div(title, className="metric-title"),
-        html.Div(value, className="metric-value", style={"color": color}),
+        html.Div(formatted_value, className="metric-value", style={"color": color}),
         html.Div(description, className="metric-description") if description else None
     ], className="metric-card")

@@ -7,6 +7,7 @@ sys.path.insert(0, project_root)
 import logging
 from datetime import datetime, timedelta
 from airflow import DAG
+from airflow.models import Variable
 from airflow.providers.standard.operators.python import PythonOperator, BranchPythonOperator
 from airflow.providers.smtp.operators.smtp import EmailOperator
 from airflow.providers.standard.operators.empty import EmptyOperator
@@ -232,7 +233,7 @@ class DemandForecastingPipeline:
             # Уведомление
             success_notification = EmailOperator(
                 task_id="success_notification",
-                to="data_team@company.com",
+                to=Variable.get("alert_email_recipients", default_var="data_team@company.com"),
                 subject="Прогнозы готовы",
                 html_content="<h3>Пайплайн выполнен успешно</h3>"
             )
@@ -284,7 +285,3 @@ dag = pipeline.create_dag()
 
 # DAG для переобучения
 weekly_retraining_dag = pipeline.create_retraining_dag()
-
-
-
-

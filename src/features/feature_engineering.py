@@ -25,33 +25,75 @@ class FeatureEngineer:
         self.nan_info["before"] = df.isna().sum().sum()
 
         try:
-            # Competition features - NaN означает отсутствие конкурента
-            competition_columns = ["CompetitionDistance", "CompetitionOpenSinceMonth", "CompetitionOpenSinceYear"]
-            df["HasCompetition"] = (~df["CompetitionOpenSinceYear"].isna()).astype(int)
+            # 1. Сематические признаки - специальная обработка
+            # Competition features: NaN означает отсутствие конкурента
+            if "CompetitionDistance" in df.columns:
+                df["HasCompetition"] = (~df["CompetitionOpenSinceYear"].isna()).astype(int)
+                # Большие расстояния для отсутствующего конкурента
+                df["CompetitionDistance"] = df["CompetitionDistance"].fillna(100000)
 
-            # Заполняем Competition пропуски
-            df[competition_columns] = df[competition_columns].fillna(0)
+            competition_columns = ["CompetitionOpenSinceMonth", "CompetitionOpenSinceYear"]
+            for col in competition_columns:
+                if col in df.columns:
+                    df[col] = df[col].fillna(0) # 0 = конкурентов нет
 
-            # Promo2 features - NaN означает неучастие в программе
+            # Promo2 features: NaN означает неучастие в программе
             promo2_columns = ["Promo2SinceWeek", "Promo2SinceYear"]
-            df["InPromo2"] = (~df["Promo2SinceYear"].isna()).astype(int)
 
-            # Заполняем Promo2 пропуски
-            df[promo2_columns] = df[promo2_columns].fillna(0)
-            df["PromoInterval"] = df["PromoInterval"].fillna("NoPromo")
+            if "Promo2SinceYear" in df.columns:
+                df["InPromo2"] = (~df["Promo2SinceYear"].isna()).astype(int)
 
-            # Остальные числовые колонки заполняем медианой
+            for col in promo2_columns:
+                if col in df.columns:
+                    df[col] = df[col].fillna(0)
+
+            if "PromoInterval" in df.columns:
+                df["PromoInterval"] = df["PromoInterval"].fillna("NoPromo")
+
+            # 2. Бинарные признаки - заполняем наиболее частым значением (модой)
+            binary_columns = ["Open", "Promo", "SchoolHoliday"]
+            for col in binary_columns:
+                if col in df.columns and df[col].isna().any():
+                    # Находим наиболее частое значение (исключая NaN)
+                    non_nan_values = df[col].dropna()
+                    if len(non_nan_values) > 0:
+                        mode_val = non_nan_values.mode()
+                        fill_value = mode_val.iloc[0] if not mode_val.empty else 0
+                    else:
+                        fill_value = 0
+
+                    df[col] = df[col].fillna(fill_value).astype(int)
+
+            # 3. Остальные числовые признаки - медиана с группировкой
             numeric_columns = df.select_dtypes(include=[np.number]).columns
+            numeric_columns = [col for col in numeric_columns
+                               if col not in binary_columns + competition_columns + promo2_columns
+                               and col != "HasCompetition"]
+
             for col in numeric_columns:
                 if df[col].isna().any():
-                    df[col] = df[col].fillna(df[col].median())
+                    # Для признаков, связанных с магазинами, группируем по магазину
+                    if "Store" in df.columns and df["Store"].nunique() > 1:
+                        df[col] = df.groupby("Store")[col].transform(
+                            lambda x: x.fillna(x.median if not x.isna().all() else 0)
+                        )
+                    else:
+                        df[col] = df[col].fillna(df[col].median())
 
-            # Категориальные колонки заполняем модой
+            # 4. Категориальные признаки
             categorical_columns = df.select_dtypes(include=["object"]).columns
+            categorical_columns = [col for col in categorical_columns if col != "PromoInterval"]
+
             for col in categorical_columns:
                 if df[col].isna().any():
-                    mode_val = df[col].mode()[0] if not df[col].mode().empty else "Unknow"
-                    df[col] = df[col].fillna(mode_val)
+                    non_nan_values = df[col].dropna()
+                    if len(non_nan_values) > 0:
+                        mode_val = non_nan_values.mode()
+                        fill_value = mode_val.iloc[0] if not mode_val.empty else "Unknown"
+                    else:
+                        fill_value = "Unknown"
+
+                    df[col] = df[col].fillna(fill_value)
 
             self.nan_info["after"] = df.isna().sum().sum()
 
@@ -64,7 +106,7 @@ class FeatureEngineer:
             print(f"Ошибка обработки NaN значений: {e}")
             raise
 
-    def fill_lag_missing_values(self, df):
+    def _fill_lag_missing_values_optimized(self, df):
         """Корректное заполнение пропусков в лаговых признаках"""
         if self.verbose:
             print("Заполнение пропусков в лагах...")
@@ -187,7 +229,7 @@ class FeatureEngineer:
                 lambda x: x.shift(1).rolling(window=lag, min_periods=1).std()
             )
 
-        df = self.fill_lag_missing_values(df)
+        df = self._fill_lag_missing_values_optimized(df)
 
         return df
 

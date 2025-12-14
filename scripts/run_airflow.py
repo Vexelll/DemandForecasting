@@ -1,6 +1,10 @@
+import logging
 import subprocess
 import sys
 import time
+import traceback
+import requests
+from datetime import datetime
 from pathlib import Path
 
 
@@ -12,220 +16,379 @@ class AirflowRunner:
         self.airflow_home = self.project_root / "airflow"
         self.wsl_project_root = self._convert_to_wsl_path(self.project_root)
         self.wsl_airflow_home = self.wsl_project_root + "/airflow"
+        self.logger = self._setup_logger()
+        self._validate_paths()
+
+    def _setup_logger(self):
+        """Настройка системы логирования"""
+        logger = logging.getLogger("airflow_runner")
+        logger.setLevel(logging.INFO)
+
+        if not logger.handlers:
+            # Консольный handler
+            console_handler = logging.StreamHandler()
+            console_handler.setLevel(logging.INFO)
+
+            # Форматтер
+            formatter = logging.Formatter(
+                "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+                datefmt="%Y-%m-%d %H:%M:%S"
+            )
+            console_handler.setFormatter(formatter)
+            logger.addHandler(console_handler)
+
+            # Файловый handler
+            log_file = self.project_root / "logs/airflow_runner.log"
+            log_file.parent.mkdir(exist_ok=True, parents=True)
+
+            file_handler = logging.FileHandler(log_file, encoding="utf-8")
+            file_handler.setLevel(logging.DEBUG)
+            file_handler.setFormatter(formatter)
+            logger.addHandler(file_handler)
+
+            return logger
+
+    def _validate_paths(self):
+        """Валидация критических путей"""
+        required_paths = [
+            self.project_root / "airflow/dags",
+            self.project_root / "src",
+            self.project_root / "config"
+        ]
+
+        missing_paths = []
+        for path in required_paths:
+            if not path.exists():
+                missing_paths.append(str(path.relative_to(self.project_root)))
+
+        if missing_paths:
+            self.logger.warning(f"Отсутствуют важные директории: {missing_paths}")
+            self.logger.warning(f"Некоторые функции могут работать некорректно")
 
     def _convert_to_wsl_path(self, windows_path):
         """Конвертация Windows пути в WSL путь"""
         path_str = str(windows_path)
 
-        # Убираем префикс пути Windows
-        if path_str.startswith("C:\\"):
-            return "/mnt/c/" + path_str[3:].replace("\\", "/")
-        elif path_str.startswith("D:\\"):
-            return "/mnt/d/" + path_str[3:].replace("\\", "/")
-        elif path_str.startswith("E:\\"):
-            return "/mnt/e/" + path_str[3:].replace("\\", "/")
-        elif ":" in path_str:
+        # Конвертация для любых дисков
+        if ":" in path_str and path_str[1:3] == ":\\":
             drive_letter = path_str[0].lower()
-            return f"/mnt/{drive_letter}/" + path_str[3:].replace("\\", "/")
+            remaining_path = path_str[3:].replace("\\", "/")
+            return f"/mnt/{drive_letter}/{remaining_path}"
         else:
+            # Уже WSL путь или относительный
             return path_str.replace("\\", "/")
 
-    def _run_wsl_command(self, command, timeout=300):
+    def _run_wsl_command(self, command, timeout=300, capture_output=True):
         """Выполнение WSL команд"""
         try:
+            self.logger.debug(f"Выполнение WSL команды: {command[:100]}...")
+
             results = subprocess.run(
                 ["wsl", "bash", "-c", command],
-                capture_output=True,
+                capture_output=capture_output,
                 text=True,
+                encoding="utf-8",
                 check=False,
                 timeout=timeout
             )
+
+            if results.returncode != 0 and capture_output:
+                self.logger.warning(f"Команда завершилась с кодом {results.returncode}")
+                if results.stdout:
+                    self.logger.debug(f"Stderr: {results.stdout[:200]}")
+
             return results
-        except subprocess.CalledProcessError as e:
-            print(f"Ошибка выполнения команды: {e}")
-            return False
+
         except subprocess.TimeoutExpired:
-            print("Таймаут выполнения команды")
+            self.logger.error(f"Таймаут выполнения команды: {command[:50]}...")
+            return None
+        except Exception as e:
+            self.logger.error(f"Ошибка выполнения команды: {e}")
             return None
 
     def sync_files_to_wsl(self):
-        """Сохранение файлов из Windows в WSL"""
-        print("Сохранение файлов в WSL")
+        """Синхронизация файлов из Windows в WSL"""
+        self.logger.info("Синхронизация файлов с WSL")
 
-        # Главный DAG файл
-        dag_file = self.project_root / "airflow/dags/demand_forecasting_dag.py"
-        wsl_dag_path = f"{self.wsl_airflow_home}/dags/demand_forecasting_dag.py"
+        sync_results = {
+            "successful": 0,
+            "failed": 0,
+            "total": 0
+        }
 
-        if dag_file.exists():
-            print(f"Копируем DAG файл: {dag_file.name}")
+        # Список критичных файлов для синхронизации
+        critical_files = [
+            {
+                "name": "Основной DAG",
+                "source": self.project_root / "airflow/dags/demand_forecasting_dag.py",
+                "target": f"{self.wsl_airflow_home}/dags/demand_forecasting_dag.py"
+            },
+            {
+                "name": "Мониторинг DAG",
+                "source": self.project_root / "airflow/dags/monitoring/dag_monitor.py",
+                "target": f"{self.wsl_airflow_home}/dags/monitoring/dag_monitor.py"
+            }
+        ]
+
+        # Синхронизация критичных файлов
+        for file_info in critical_files:
+            if not file_info["source"].exists():
+                self.logger.warning(f"Файл не найден: {file_info["source"]}")
+                continue
+
             try:
-                # Читаем файл с UTF-8
-                with open(dag_file, "r", encoding="utf-8") as f:
-                    dag_content = f.read()
+                # Создаем целевую директорию
+                target_dir = "/".join(file_info["target"].split("/")[:-1])
+                mkdir_result = self._run_wsl_command(f"mkdir -p {target_dir}", timeout=30)
 
-                # Создаем директорию в WSL
-                self._run_wsl_command(f"mkdir -p {self.wsl_airflow_home}/dags")
+                if mkdir_result is None or mkdir_result.returncode != 0:
+                    self.logger.error(f"Не удалось создать директорию: {target_dir}")
+                    sync_results["failed"] += 1
+                    continue
 
-                # Копируем файл в WSL с UTF-8
-                subprocess.run([
-                    "wsl", "bash", "-c",
-                    f"cat > {wsl_dag_path}"
-                ], input=dag_content.encode("utf-8"), check=True, timeout=30)
+                # Читаем файл с обработкой кодировки
+                with open(file_info["source"], "r", encoding="utf-8") as f:
+                    file_content = f.read()
 
-                print(f"DAG файл сохранен в WSL: {wsl_dag_path}")
+                # Копируем файл в WSL
+                copy_command = f"cat > {file_info["target"]}"
+                copy_proccess = subprocess.run(
+                    ["wsl", "bash", "-c", copy_command],
+                    input=file_content.encode("utf-8"),
+                    capture_output=True,
+                    timeout=30
+                )
+
+                if copy_proccess.returncode == 0:
+                    self.logger.info(f"Файл синхронизирован: {file_info["name"]}")
+                    sync_results["successful"] += 1
+                else:
+                    self.logger.error(f"Ошибка копирования {file_info["name"]} : {copy_proccess.stderr}")
+                    sync_results["failed"] += 1
+
+                sync_results["total"] += 1
+
             except Exception as e:
-                print(f"Ошибка сохранения DAG файла: {e}")
+                self.logger.error(f"Ошибка синхронизации {file_info["name"]}: {e}")
+                sync_results["failed"] += 1
+                sync_results["total"] += 1
 
-        # Папка src
-        src_dir = self.project_root / "src"
-        wsl_src_dir = f"{self.wsl_project_root}/src"
+        # Рекурсивная синхронизация директорий
+        directories_to_sync = [
+            ("src", f"{self.wsl_project_root}/src", "**/*.py"),
+            ("config", f"{self.wsl_project_root}/config", "**/*.py"),
+            ("airflow/dags/monitoring", f"{self.wsl_airflow_home}/dags/monitoring", "**/*.py")
+        ]
 
-        if src_dir.exists():
-            print(f"Копируем папку src...")
+        for dir_name, wsl_target, pattern in directories_to_sync:
+            source_dir = self.project_root / dir_name
+
+            if not source_dir.exists():
+                self.logger.warning(f"Директория не найдена: {source_dir}")
+                continue
+
             try:
-                # Копируем только .py файлы
-                for file_path in src_dir.rglob("*.py"):
-                    rel_path = file_path.relative_to(src_dir)
-                    # Исправляем путь: заменяем все обратные слеши
-                    rel_path_str = str(rel_path).replace("\\", "/").replace("\\\\", "/")
-                    wsl_file_path = f"{wsl_src_dir}/{rel_path_str}"
-                    wsl_file_dir = "/".join(wsl_file_path.split("/")[:-1])
+                # Создаем целевую директорию
+                self._run_wsl_command(f"mkdir -p {wsl_target}", timeout=30)
 
-                    # Создаем директорию
-                    self._run_wsl_command(f"mkdir -p {wsl_file_dir}")
+                # Находим все файлы
+                for source_file in source_dir.rglob(pattern):
+                    try:
+                        rel_path = source_file.relative_to(source_dir)
+                        wsl_file_path = f"{wsl_target}/{str(rel_path).replace("\\", "/")}"
+                        wsl_file_dir = "/".join(wsl_file_path.split("/")[:-1])
 
-                    # Читаем и копируем файл
-                    with open(file_path, "r", encoding="utf-8") as f:
-                        file_content = f.read()
+                        # Создаем поддиректории
+                        self._run_wsl_command(f"mkdir -p {wsl_file_dir}", timeout=10)
 
-                    subprocess.run([
-                        "wsl", "bash", "-c",
-                        f"cat > {wsl_file_path}"
-                    ], input=file_content.encode("utf-8"), check=True, timeout=30)
+                        # Копируем файл
+                        with open(source_file, "r", encoding="utf-8") as f:
+                            content = f.read()
 
-                print(f"Папка src сохранена в WSL: {wsl_src_dir}")
+                        subprocess.run(
+                            ["wsl", "bash", "-c", f"cat > {wsl_file_path}"],
+                            input=content.encode("utf-8"),
+                            capture_output=True,
+                            timeout=30
+                        )
+
+                        sync_results["successful"] += 1
+                        sync_results["total"] += 1
+
+                    except Exception as e:
+                        self.logger.warning(f"Ошибка копирования: {source_file}: {e}")
+                        sync_results["failed"] += 1
+                        sync_results["total"] += 1
+
             except Exception as e:
-                print(f"Ошибка сохранения папки src: {e}")
+                self.logger.error(f"Ошибка синхронизации директории {dir_name}: {e}")
 
-        # Папка monitoring
-        monitoring_dir = self.project_root / "monitoring"
-        wsl_monitoring_dir = f"{self.wsl_project_root}/monitoring"
+        # Итоговая статистика
+        self.logger.info(f"Синхронизация завершена: {sync_results["successful"]}/{sync_results["total"]} файлов")
 
-        if monitoring_dir.exists():
-            print(f"Копируем папку monitoring...")
-            try:
-                self._run_wsl_command(f"rm -rf {wsl_monitoring_dir}")
-                self._run_wsl_command(f"mkdir -p {wsl_monitoring_dir}")
+        if sync_results["failed"] > 0:
+            self.logger.warning(f"Ошибка при синхронизации: {sync_results["failed"]}")
 
-                # Копируем .py файлы из monitoring
-                for file_path in monitoring_dir.rglob("*.py"):
-                    rel_path = file_path.relative_to(monitoring_dir)
-                    # Исправляем путь: заменяем все обратные слеши
-                    rel_path_str = str(rel_path).replace("\\", "/")
-                    wsl_file_path = f"{wsl_monitoring_dir}/{rel_path_str}"
-                    wsl_file_dir = "/".join(wsl_file_path.split("/")[:-1])
-
-                    self._run_wsl_command(f"mkdir -p {wsl_file_dir}")
-
-                    with open(file_path, "r", encoding="utf-8") as f:
-                        file_content = f.read()
-
-                    subprocess.run([
-                        "wsl", "bash", "-c",
-                        f"cat > {wsl_file_path}"
-                    ], input=file_content.encode("utf-8"), check=True, timeout=30)
-
-                print(f"Папка monitoring сохранена в WSL: {wsl_monitoring_dir}")
-            except Exception as e:
-                print(f"Ошибка сохранения папки monitoring: {e}")
-
-        print("Все файлы сохранены в WSL")
-        return True
+        return sync_results["failed"] == 0
 
     def check_wsl_installation(self):
         """Проверка установки WSL"""
+        self.logger.info("Проверка установки WSL")
+
         try:
-            subprocess.run(["wsl", "--status"], capture_output=True, check=True, timeout=30)
-            print("WSL установлен и работает")
-            return True
-        except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as e:
-            print(f"Ошибка проверки WSL: {e}")
+            # Проверка наличия WSL
+            version_check = subprocess.run(
+                ["wsl", "--version"],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+
+            if version_check.returncode == 0:
+                self.logger.info(f"WSL обнаружен: {version_check.stdout.splitlines()[0]}")
+
+                # Проверяем доступные дистрибутивы
+                list_check = subprocess.run(
+                    ["wsl", "-l", "-v"],
+                    capture_output=True,
+                    text=True,
+                    timeout=30
+                )
+
+                if list_check.returncode == 0:
+                    self.logger.debug("Доступные дистрибутивы WSL:")
+                    for line in list_check.stdout.splitlines():
+                        self.logger.debug(f"{line}")
+
+                return True
+            else:
+                self.logger.error("WSL не установлен или не настроен")
+                self.logger.error(f"Ошибка: {version_check.stderr}")
+                return False
+
+        except FileNotFoundError:
+            self.logger.error("Команда wsl не найдена. Установите WSL2.")
+            return False
+        except subprocess.TimeoutExpired:
+            self.logger.error("Таймаут проверки WSL")
             return False
 
     def check_airflow_installation(self):
         """Проверка установки Airflow в WSL"""
-        try:
-            result = subprocess.run([
-                "wsl", "bash", "-c",
-                f"cd {self.wsl_project_root} && .venv/bin/airflow version"
-            ], capture_output=True, text=True, check=True, timeout=30)
+        self.logger.info("Проверка установки Airflow")
 
-            print(f"Airflow версия: {result.stdout.strip()}")
-            return True
+        try:
+            result = self._run_wsl_command(
+                f"cd {self.wsl_project_root} && "
+                f"source .venv/bin/activate && "
+                f"python -c \"import airflow; print('Airflow версия:', airflow.__version__)\"",
+                timeout=60
+            )
+
+            if result and result.returncode == 0:
+                self.logger.info(result.stdout.strip())
+                return True
+            else:
+                self.logger.error("Airflow не установлен в WSL")
+                if result and result.stderr:
+                    self.logger.error(f"Ошибка: {result.stderr}")
+                return False
+
         except Exception as e:
-            print(f"Ошибка проверки Airflow: {e}")
+            self.logger.error(f"Ошибка проверки Airflow: {e}")
             return False
 
     def cleanup_old_database(self):
         """Очистка старой базы данных, если существует"""
-        print("Очистка старой базы данных...")
+        self.logger.info("Очистка старой базы данных")
 
-        # Удаляем старые файлы БД
+        backup_dir = f"{self.wsl_airflow_home}/backups"
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        # Создаем бэкап старой БД
+        backup_commands = [
+            f"mkdir -p {backup_dir}",
+            f"cp {self.wsl_airflow_home}/airflow.db {backup_dir}/airflow.db.backup_{timestamp} 2>/dev/null || true",
+            f"ls -la {backup_dir}/*.backup_* 2>/dev/null | tail -n +6 | xargs rm -f 2>/dev/null || true"
+        ]
+
+        for cmd in backup_commands:
+            self._run_wsl_command(cmd, timeout=30)
+
+        # Очищаем старые файлы
         cleanup_commands = [
             f"rm -f {self.wsl_airflow_home}/airflow.db",
-            f"rm -f {self.wsl_airflow_home}/webserver_config.py",
             f"rm -f {self.wsl_airflow_home}/airflow.cfg",
-            "rm -f /home/oldoin/airflow/airflow.db"  # Очищаем и дефолтный путь
+            f"rm -rf {self.wsl_airflow_home}/logs/*",
+            f"rm -f /tmp/airflow_*.pid 2>/dev/null || true"
         ]
 
         for cmd in cleanup_commands:
-            self._run_wsl_command(cmd, timeout=30)
+            result = self._run_wsl_command(cmd, timeout=30)
+            if result and result.returncode != 0:
+                self.logger.warning(f"Ошибка очистки: {cmd}")
+
+        self.logger.info("Очистка базы данных завершена")
+        return True
 
     def initialize_database(self):
         """Инициализация базы данных Airflow в WSL"""
-        print("Инициализация базы данных Airflow")
+        self.logger.info("Инициализация базы данных Airflow")
 
         try:
-            # Сначала сохраняем файлы в WSL
-            self.sync_files_to_wsl()
+            # Сначала синхронизируем файлы
+            if not self.sync_files_to_wsl():
+                self.logger.warning("Синхронизация файлов завершилась с ошибками")
 
-            # Очистка старой БД
+            # Очищаем старую БД
             self.cleanup_old_database()
 
-            # Создание необходимых директорий в WSL
-            self._run_wsl_command(f"mkdir -p {self.wsl_airflow_home}/dags", timeout=30)
-            self._run_wsl_command(f"mkdir -p {self.wsl_airflow_home}/logs", timeout=30)
-            self._run_wsl_command(f"mkdir -p {self.wsl_airflow_home}/plugins", timeout=30)
+            # Создаем необходимые директории
+            directories = [
+                f"{self.wsl_airflow_home}/dags",
+                f"{self.wsl_airflow_home}/logs",
+                f"{self.wsl_airflow_home}/plugins",
+                f"{self.wsl_airflow_home}/backups"
+            ]
+
+            for directory in directories:
+                self._run_wsl_command(f"mkdir -p {directory}", timeout=30)
 
             # Инициализация БД Airflow
             result = self._run_wsl_command(
                 f"cd {self.wsl_project_root} && "
                 f"export AIRFLOW_HOME={self.wsl_airflow_home} && "
                 f"export AIRFLOW__CORE__LOAD_EXAMPLES=false && "
-                f"export AIRFLOW__DATABASE__SQL_ALCHEMY_CONN='sqlite:///{self.wsl_airflow_home}/airflow.db?journal_mode=DELETE&locking_mode=EXCLUSIVE' && "
+                f"export AIRFLOW__CORE__DAGS_FOLDER={self.wsl_airflow_home}/dags && "
+                f"export AIRFLOW__DATABASE__SQL_ALCHEMY_CONN="
+                f"'sqlite:///{self.wsl_airflow_home}/airflow.db?journal_mode=DELETE&locking_mode=EXCLUSIVE' && "
                 f".venv/bin/airflow db migrate",
-                timeout=120)
+                timeout=180
+            )
 
             if result and result.returncode == 0:
-                print("База данных Airflow инициализирована")
-                return True
-            else:
-                print(f"Ошибка инициализации базы данных")
-                if result:
-                    print(f"stdout: {result.stdout}")
-                    print(f"stderr: {result.stderr}")
-                return False
+                self.logger.info("База данных Airflow инициализирована")
 
-        except subprocess.CalledProcessError as e:
-            print(f"Ошибка инициализации базы данных: {e}")
-            return False
-        except subprocess.TimeoutExpired:
-            print("Таймаут инициализации базы данных")
+                # Проверяем создание файла БД
+                check_db = self._run_wsl_command(
+                    f"test -f {self.wsl_airflow_home}/airflow.db && echo 'OK'",
+                    timeout=30
+                )
+
+                if check_db and "OK" in check_db.stdout:
+                    self.logger.info("Файл базы данных создан")
+                    return True
+                else:
+                    self.logger.error("Файл базы данных не создан")
+                    return False
+
+        except Exception as e:
+            self.logger.error(f"Ошибка инициализации базы данных: {e}")
             return False
 
     def reserialize_dags(self):
         """Ресериализация DAG файлов"""
-        print("Ресериализация DAG файлов...")
+        self.logger.info("Ресериализация DAG файлов")
 
         try:
             result = self._run_wsl_command(
@@ -237,97 +400,113 @@ class AirflowRunner:
             )
 
             if result and result.returncode == 0:
-                print("DAG файлы успешно ресериализованы")
-                print(f"Вывод: {result.stdout[:200]}...")  # Показываем первые 200 символов
+                self.logger.info("DAG файлы успешно ресериализованы")
+
+                # Проверяем количество DAG
+                check_dags = self._run_wsl_command(
+                    f"cd {self.wsl_project_root} && "
+                    f"export AIRFLOW_HOME={self.wsl_airflow_home} && "
+                    f".venv/bin/airflow dags list | wc -l",
+                    timeout=30
+                )
+
+                if check_dags:
+                    dag_count = int(check_dags.stdout.strip())
+                    self.logger.info(f"Загружено DAG: {dag_count}")
+
                 return True
             else:
-                print("Ошибка ресериализации DAG файлов")
-                if result:
-                    print(f"stdout: {result.stdout}")
-                    print(f"stderr: {result.stderr}")
+                self.logger.error("Ошибка ресериализации DAG файлов")
                 return False
 
         except Exception as e:
-            print(f"Ошибка при ресериализации DAG: {e}")
+            self.logger.error(f"Ошибка при ресериализации DAG: {e}")
+            return False
+
+    def _start_service(self, service_type, command, name):
+        """Запуск сервиса Airflow (api-server или scheduler)"""
+        self.logger.info(f"Запуск {name}")
+
+        try:
+            process = subprocess.Popen(
+                ["wsl", "bash", "-c", command],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8"
+            )
+
+            # Даем время на запуск
+            time.sleep(5)
+
+            if process.poll() is None:
+                self.logger.info(f"{name} запущен")
+
+                # Проверяем, что сервис действительно работает
+                if service_type == "api-server":
+                    check_result = self._check_api_server_health()
+                    if not check_result:
+                        self.logger.warning(f"{name} запущен, но не отвечает на запросы")
+
+                return process
+            else:
+                stdout, stderr = process.communicate(timeout=5)
+                self.logger.error(f"{name} завершился сразу после запуска")
+                self.logger.error(f"Stdout: {stdout[:200]}")
+                self.logger.error(f"Stderr: {stderr[:200]}")
+                return None
+
+        except Exception as e:
+            self.logger.error(f"Ошибка запуска {name}: {e}")
+            return None
+
+    def _check_api_server_health(self):
+        """Проверка здоровья api-server"""
+        try:
+            response = requests.get("http://localhost:8080/health", timeout=10)
+            return response.status_code == 200
+        except:
             return False
 
     def start_api_server(self):
         """Запуск Airflow API Server в WSL"""
-        print("Запуск Airflow API Server")
+        command = (
+            f"cd {self.wsl_project_root} && "
+            f"export AIRFLOW_HOME={self.wsl_airflow_home} && "
+            f"export AIRFLOW__CORE__DAGS_FOLDER={self.wsl_airflow_home}/dags && "
+            f"export AIRFLOW__CORE__LOAD_EXAMPLES=false && "
+            f"export AIRFLOW__CORE__EXECUTOR=LocalExecutor && "
+            f"export AIRFLOW__DATABASE__SQL_ALCHEMY_CONN="
+            f"'sqlite:///{self.wsl_airflow_home}/airflow.db?journal_mode=DELETE&locking_mode=EXCLUSIVE' && "
+            f"export AIRFLOW__LOGGING__BASE_LOG_FOLDER={self.wsl_airflow_home}/logs && "
+            f".venv/bin/airflow api-server --port 8080 --host 0.0.0.0"
+        )
 
-        try:
-            command = (
-                f"cd {self.wsl_project_root} && "
-                f"export AIRFLOW_HOME={self.wsl_airflow_home} && "
-                f"export AIRFLOW__CORE__DAGS_FOLDER={self.wsl_airflow_home}/dags && "
-                f"export AIRFLOW__CORE__LOAD_EXAMPLES=false && "
-                f"export AIRFLOW__CORE__EXECUTOR=LocalExecutor && "
-                f"export AIRFLOW__DATABASE__SQL_ALCHEMY_CONN='sqlite:///{self.wsl_airflow_home}/airflow.db?journal_mode=DELETE&locking_mode=EXCLUSIVE' && "
-                f"export AIRFLOW__LOGGING__BASE_LOG_FOLDER={self.wsl_airflow_home}/logs && "
-                f".venv/bin/airflow api-server --port 8080 --host 0.0.0.0")
-
-            process = subprocess.Popen(
-                ["wsl", "bash", "-c", command],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True
-            )
-
-            time.sleep(15)
-
-            if process.poll() is None:
-                print("Airflow API Server запущен: http://localhost:8080")
-                return process
-            else:
-                print("API Server завершился сразу после запуска")
-                return None
-
-        except Exception as e:
-            print(f"Ошибка запуска API Server: {e}")
-            return None
+        return self._start_service("api-server", command, "Airflow API Server")
 
     def start_scheduler(self):
         """Запуск Airflow Scheduler в WSL"""
-        print("Запуск Airflow Scheduler")
+        command = (
+            f"cd {self.wsl_project_root} && "
+            f"export AIRFLOW_HOME={self.wsl_airflow_home} && "
+            f"export AIRFLOW__CORE__DAGS_FOLDER={self.wsl_airflow_home}/dags && "
+            f"export AIRFLOW__CORE__LOAD_EXAMPLES=false && "
+            f"export AIRFLOW__CORE__EXECUTOR=LocalExecutor && "
+            f"export AIRFLOW__DATABASE__SQL_ALCHEMY_CONN="
+            f"'sqlite:///{self.wsl_airflow_home}/airflow.db?journal_mode=DELETE&locking_mode=EXCLUSIVE' && "
+            f"export AIRFLOW__LOGGING__BASE_LOG_FOLDER={self.wsl_airflow_home}/logs && "
+            f".venv/bin/airflow scheduler"
+        )
 
-        try:
-            command = (
-                f"cd {self.wsl_project_root} && "
-                f"export AIRFLOW_HOME={self.wsl_airflow_home} && "
-                f"export AIRFLOW__CORE__DAGS_FOLDER={self.wsl_airflow_home}/dags && "
-                f"export AIRFLOW__CORE__LOAD_EXAMPLES=false && "
-                f"export AIRFLOW__CORE__EXECUTOR=LocalExecutor && "
-                f"export AIRFLOW__DATABASE__SQL_ALCHEMY_CONN='sqlite:///{self.wsl_airflow_home}/airflow.db?journal_mode=DELETE&locking_mode=EXCLUSIVE' && "
-                f"export AIRFLOW__LOGGING__BASE_LOG_FOLDER={self.wsl_airflow_home}/logs && "
-                f".venv/bin/airflow scheduler")
-
-            process = subprocess.Popen(
-                ["wsl", "bash", "-c", command],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True
-            )
-
-            time.sleep(10)
-
-            if process.poll() is None:
-                print("Airflow Scheduler запущен")
-                return process
-            else:
-                print("Scheduler завершился сразу после запуска")
-                return None
-
-        except Exception as e:
-            print(f"Ошибка запуска Scheduler: {e}")
-            return None
+        return self._start_service("scheduler", command, "Airflow Scheduler")
 
     def check_dags_loaded(self):
         """Проверка загрузки DAG в WSL"""
-        print("Проверка загрузки DAG")
+        self.logger.info("Проверка загрузки DAG")
 
         try:
             result = self._run_wsl_command(
-                f"cd {self.wsl_project_root} && "
+                f"cd {self.wsl_project_root} &&"
                 f"export AIRFLOW_HOME={self.wsl_airflow_home} && "
                 f"export AIRFLOW__CORE__LOAD_EXAMPLES=false && "
                 f".venv/bin/airflow dags list",
@@ -335,76 +514,111 @@ class AirflowRunner:
             )
 
             if result and result.stdout:
-                print("Список доступных DAG:")
-                print(result.stdout)
+                dags_loaded = []
+                for line in result.stdout.splitlines():
+                    if line.strip() and not line.startswith("-"):
+                        dags_loaded.append(line.strip())
 
-                # Проверяем наличие конкретных DAG
-                if "demand_forecasting" in result.stdout.lower():
-                    print("DAG demand_forecasting загружен")
-                    return True
-                elif "demand_forecasting_pipeline" in result.stdout.lower():
-                    print("DAG demand_forecasting_pipeline загружен")
+                self.logger.info(f"Загружено DAG: {len(dags_loaded)}")
+
+                for dag in dags_loaded[:5]: # Показываем первые 5
+                    self.logger.debug(f"{dag}")
+
+                if len(dags_loaded) > 5:
+                    self.logger.debug(f"  ... и еще {len(dags_loaded) - 5} DAG")
+
+                # Проверяем наличие наших DAG
+                target_dags = ["demand_forecasting_pipeline", "weekly_model_retraining"]
+                found_dags = []
+
+                for target_dag in target_dags:
+                    if any(target_dag in dag.lower() for dag in dags_loaded):
+                        found_dags.append(target_dag)
+
+                if len(found_dags) == len(target_dags):
+                    self.logger.info("Все целевые DAG загружены")
                     return True
                 else:
-                    print("DAG не найден в списке")
+                    missing = set(target_dags) - set(found_dags)
+                    self.logger.warning(f"Отсутствуют DAG: {missing}")
                     return False
             else:
-                print("Нет вывода от команды dags list")
+                self.logger.error("Нет вывода от команды dags list")
                 return False
 
         except Exception as e:
-            print(f"Ошибка проверки DAG: {e}")
+            self.logger.error(f"Ошибка проверки DAG: {e}")
             return False
 
-    def trigger_dag(self, dag_id="demand_forecasting"):
+    def trigger_dag(self, dag_id="demand_forecasting_pipeline"):
         """Запуск DAG"""
-        print(f"Запуск DAG {dag_id}")
+        self.logger.info(f"Запуск DAG {dag_id}")
 
         try:
-            result = subprocess.run([
-                "wsl", "bash", "-c",
+            result = self._run_wsl_command(
                 f"cd {self.wsl_project_root} && "
                 f"export AIRFLOW_HOME={self.wsl_airflow_home} && "
-                f".venv/bin/airflow dags trigger {dag_id}"
-            ], capture_output=True, text=True, check=True, timeout=60)
+                f".venv/bin/airflow dags trigger {dag_id}",
+                timeout=60
+            )
 
-            print(f"DAG {dag_id} успешно запущен")
-            print(f"Результат: {result.stdout}")
-            return True
+            if result and result.returncode == 0:
+                self.logger.info(f"DAG {dag_id} успешно запущен")
+                self.logger.debug(f"Результат: {result.stdout}")
+                return True
+            else:
+                self.logger.error(f"Ошибка запуска DAG {dag_id}")
+                if result:
+                    self.logger.error(f"Stdout: {result.stdout}")
+                    self.logger.error(f"Stderr: {result.stderr}")
+                return False
 
-        except subprocess.CalledProcessError as e:
-            print(f"Ошибка запуска DAG: {e}")
-            print(f"stdout: {e.stdout}")
-            print(f"stderr: {e.stderr}")
+        except Exception as e:
+            self.logger.error("Ошибка запуска DAG: {e}")
             return False
 
     def run(self):
         """Основной метод запуска Airflow через WSL"""
-        print("Запуск локального Airflow через WSL")
+        self.logger.info("Запуск локального Airflow через WSL")
 
+        print("Система прогнозирования спроса - Локальный запуск Airflow через WSL")
+        print("=" * 60)
+
+        print(f"\nКонфигурация:")
+        print(f"Project root: {self.project_root}")
+        print(f"Airflow home: {self.airflow_home}")
+        print(f"WSL project root: {self.wsl_project_root}")
+
+        # Проверка WSL
         if not self.check_wsl_installation():
-            print("Ошибка: WSL не установлен")
+            self.logger.error("Ошибка: WSL не установлен")
             print("Установите WSL2 для продолжения")
             return False
 
+        # Проверка Airflow
         if not self.check_airflow_installation():
-            print("Ошибка: Airflow не установлен в WSL")
+            self.logger.error("Ошибка: Airflow не установлен в WSL")
             print("Запустите сначала setup_wsl.py для установки зависимостей")
             return False
 
+        # Инициализация БД
         if not self.initialize_database():
+            self.logger.error("Не удалось инициализировать базу данных")
             return False
 
+        # Ресериализация DAG
         if not self.reserialize_dags():
-            print("Предупреждение: ресериализация DAG не удалась, продолжаем...")
+            self.logger.warning("Ресериализация DAG не удалась, продолжаем...")
 
         # Запуск API Server и Scheduler
         api_server_process = self.start_api_server()
         if not api_server_process:
+            self.logger.error("Не удалось запустить API Server")
             return False
 
         scheduler_process = self.start_scheduler()
         if not scheduler_process:
+            self.logger.error("Не удалось запустить Scheduler")
             api_server_process.terminate()
             return False
 
@@ -414,7 +628,7 @@ class AirflowRunner:
 
         # Проверяем загрузку DAG
         if not self.check_dags_loaded():
-            print("Предупреждение: DAG не загружен, попробуем ресериализовать еще раз...")
+            self.logger.warning("DAG не загружен, попробуем ресериализовать еще раз...")
             time.sleep(5)
             self.reserialize_dags()
             time.sleep(10)
@@ -438,22 +652,24 @@ class AirflowRunner:
 
 def main():
     """Точка входа скрипта"""
-    runner = AirflowRunner()
+    try:
+        runner = AirflowRunner()
+        success = runner.run()
 
-    print("Система прогнозирования спроса - Локальный запуск Airflow через WSL")
-    print("Конфигурация:")
-    print(f"Project root: {runner.project_root}")
-    print(f"Airflow home: {runner.airflow_home}")
-    print(f"DAGs folder: {runner.airflow_home / "dags"}")
-    print(f"WSL project root: {runner.wsl_project_root}")
+        if success:
+            print("Airflow завершил работу")
+        else:
+            print("Ошибка запуска Airflow")
+            sys.exit(1)
 
-    success = runner.run()
-
-    if success:
-        print("Airflow завершил работу")
-    else:
-        print("Ошибка запуска Airflow")
+    except KeyboardInterrupt:
+        print("\nЗапуск прерван пользователем")
+        sys.exit(0)
+    except Exception as e:
+        print(f"Критическая ошибка: {e}")
+        traceback.print_exc()
         sys.exit(1)
+
 
 
 if __name__ == "__main__":

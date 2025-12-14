@@ -73,7 +73,7 @@ class PipelineOperations:
         try:
             etl = ETLPipeline()
             results = etl.run_pipeline(
-                DATA_PATH / "raw/train.csv",
+                DATA_PATH / "raw/test.csv",
                 DATA_PATH / "raw/store.csv",
                 DATA_PATH / "outputs/predictions.csv"
             )

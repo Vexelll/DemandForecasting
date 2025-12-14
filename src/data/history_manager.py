@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 import joblib
-from typing import Optional
+from typing import Optional, Union, List
 from datetime import timedelta, datetime
 from pathlib import Path
 from config.settings import DATA_PATH
@@ -96,7 +96,7 @@ class SalesHistoryManager:
         self._save_history()
         print(f"История обновлена: {len(new_data_clean)} новых записей, всего: {len(self.history)}")
 
-    def get_store_history(self, store_id: int, days_back: int = 365, end_date: Optional[str | datetime] = None) -> pd.DataFrame:
+    def get_store_history(self, store_id: int, days_back: int = 365, end_date: Union[str, datetime, None] = None) -> pd.DataFrame:
         """Получение истории продаж для конкретного магазина"""
         if self.history is None or self.history.empty:
             return pd.DataFrame()
@@ -122,7 +122,7 @@ class SalesHistoryManager:
 
         return filtered_history
 
-    def get_latest_sales(self, store_id: int, days: int = 28, end_date: Optional[str | datetime] = None) -> Optional[pd.Series]:
+    def get_latest_sales(self, store_id: int, days: int = 28, end_date: Union[str, datetime, None] = None) -> Optional[pd.Series]:
         """Получение последних продаж для магазина до указанной даты"""
         store_history = self.get_store_history(store_id, days_back=days + 7, end_date=end_date)
 
@@ -145,49 +145,75 @@ class SalesHistoryManager:
 
         return recent_sales
 
-    def calculate_lags(self, store_id: int, target_date: str | datetime, lag_days: list[int] = [1, 7, 14, 28]) -> dict[str, float]:
+    def calculate_lags_batch(self, store_ids: list[int], dates: List[Union[str, datetime]], lag_days: List[int] = [1, 7, 14, 28]) -> pd.DataFrame:
         """Расчет лаговых признаков"""
-        lags = {}
-        target_date = pd.to_datetime(target_date)
+        results = []
 
-        # Получение истории до target_date
-        max_lag = max(lag_days) if lag_days else 28
-        history = self.get_store_history(
-            store_id,
-            days_back=max_lag + 7,
-            end_date=target_date - timedelta(days=1)
-        )
+        # Группируем по магазинам для оптимизации
+        store_date_pairs = pd.DataFrame({
+            "Store": store_ids,
+            "Date": pd.to_datetime(dates)
+        })
 
-        if len(history) == 0:
-            # Если истории нет, возвращаем NaN
-            for lag in lag_days:
-                lags[f"SalesLag_{lag}"] = np.nan
-                lags[f"RollingMean_{lag}"] = np.nan
-                lags[f"RollingStd_{lag}"] = np.nan
-            return lags
+        # Для каждого уникального магазина
+        unique_stores = store_date_pairs["Store"].unique()
 
-        # Преобразование во временной ряд
-        history_ts = history.set_index("Date")["Sales"]
+        for store_id in unique_stores:
+            # Фильтруем данные для текущего магазина
+            store_mask = store_date_pairs["Store"] == store_id
+            store_dates = store_date_pairs.loc[store_mask, "Date"]
 
-        for lag in lag_days:
-            # Лаговые признаки - данные за lag дней до target_date
-            lag_date = target_date - timedelta(days=lag)
-            lag_value = history_ts.get(lag_date, np.nan)
-            lags[f"SalesLag_{lag}"] = lag_value
+            max_lag = max(lag_days)
 
-            # Скользящее среднее и STD за период до target_date
-            window_end = target_date - timedelta(days=1)
-            window_start = window_end - timedelta(days=lag - 1)
+            # Для каждой даты в запросе
+            for date in store_dates:
+                result = {"Store": store_id, "Date": date}
 
-            window_data = history_ts[
-                (history_ts.index >= window_start) &
-                (history_ts.index <= window_end)
-                ]
+                history_end = date - timedelta(days=1) # История до целевой даты
 
-            lags[f"RollingMean_{lag}"] = window_data.mean() if len(window_data) > 0 else np.nan
-            lags[f"RollingStd_{lag}"] = window_data.std() if len(window_data) > 1 else np.nan
+                history = self.get_store_history(
+                    store_id,
+                    days_back=max_lag * 2 + 30,  # Запас для расчета
+                    end_date=history_end
+                )
 
-        return lags
+                if history.empty:
+                    # Если истории нет, заполняем NaN только для этой даты
+                    for lag in lag_days:
+                        result[f"SalesLag_{lag}"] = np.nan
+                        result[f"RollingMean_{lag}"] = np.nan
+                        result[f"RollingStd_{lag}"] = np.nan
+                    results.append(result)
+                    continue
+
+                # Сортируем историю по дате
+                history = history.sort_values("Date")
+                history_ts = history.set_index("Date")["Sales"]
+
+                for lag in lag_days:
+                    # Лаговые признаки
+                    lag_date = date - timedelta(days=lag)
+                    lag_value = history_ts.get(lag_date, np.nan)
+                    result[f"SalesLag_{lag}"] = lag_value
+
+                    # Скользящее среднее и STD
+                    window_end = date - timedelta(days=1)
+                    window_start = window_end - timedelta(days=lag - 1)
+
+                    window_data = history_ts[
+                        (history_ts.index >= window_start) &
+                        (history_ts.index <= window_end)
+                    ]
+
+                    result[f"RollingMean_{lag}"] = window_data.mean() if len(window_data) > 0 else np.nan
+
+                    result[f"RollingStd_{lag}"] = window_data.std() if len(window_data) > 1 else np.nan
+
+
+
+                results.append(result)
+
+        return pd.DataFrame(results)
 
     def get_history_stats(self) -> dict[str, int | str | float]:
         """Статистика по конкретному магазину на определенную дату"""
@@ -288,6 +314,8 @@ def initialize_sales_history(data_path: Optional[Path] = None) -> SalesHistoryMa
         return history_manager
 
 if __name__ == "__main__":
+    initialize_sales_history()
+
     # Тестирование функциональности
     manager = SalesHistoryManager()
     stats = manager.get_history_stats()

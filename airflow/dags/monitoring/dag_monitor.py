@@ -1,4 +1,5 @@
 import json
+import re
 from datetime import datetime
 import logging
 from config.settings import DATA_PATH, REPORTS_PATH, MODELS_PATH
@@ -118,7 +119,7 @@ class DAGMonitor:
         return report
 
     def _save_performance_report(self, report):
-        """Сохранение отчета о производительности с обработкой ошибок"""
+        """Сохранение отчета о производительности"""
         try:
             report_path = REPORTS_PATH / "performance_report.json"
             with open(report_path, "w", encoding="utf-8") as f:
@@ -188,19 +189,63 @@ class DAGMonitor:
         data_quality = self.check_data_quality()
 
         health_score = 0
-        if data_quality["training_data_exists"]:
+
+        # Проверка существования ключевых файлов (по 25 баллов каждый)
+        if data_quality.get("training_data_exists"):
             health_score += 25
-        if data_quality["model_exists"]:
+        if data_quality.get("model_exists"):
             health_score += 25
-        if data_quality["predictions_exist"]:
+        if data_quality.get("predictions_exist"):
             health_score += 25
 
-        # Оценка свежести данных
-        if data_quality["data_freshness"]:
-            if "day" not in data_quality["data_freshness"]:
-                health_score += 25
+        # Проверка свежести данных
+        if data_quality.get("data_freshness"):
+            try:
+                freshness_str = data_quality["data_freshness"]
 
-        return {"health_score": health_score, "status": "healthy" if health_score >= 75 else "degraded" if health_score >= 50 else "critical"}
+                total_hours = 0
+
+                if "day" in freshness_str:
+                    parts = freshness_str.split(",")
+                    if len(parts) == 2:
+                        days_part = parts[0].strip()
+                        time_part = parts[1].strip()
+
+                        # Извлекаем количество дней
+                        days_match = re.search(r"(\d+)\s+day", days_part)
+                        if days_match:
+                            days = int(days_match.group(1))
+                            total_hours += days * 24
+
+                        # Извлекаем часы из временной части
+                        time_match = re.match(r"(\d+):(\d+):(\d+)", time_part)
+                        if time_match:
+                            hours = int(time_match.group(1))
+                            total_hours += hours
+                else:
+                    time_match = re.match(r"(\d+):(\d+):(\d+)", freshness_str)
+                    if time_match:
+                        hours = int(time_match.group(1))
+                        total_hours = hours
+
+                # Данные считаются свежими, если им меньше 24 часов
+                if total_hours < 24:
+                    health_score += 25
+                else:
+                    self.logger.warning(f"Данные устарели: {total_hours} часов")
+
+            except Exception as e:
+                self.logger.error(f"Ошибка анализа свежести данных {data_quality["data_freshness"]}: {e}")
+
+        # Определяем статус системы
+        if health_score >= 75:
+            status = "healthy"
+        elif health_score >= 50:
+            status = "degraded"
+        else:
+            status = "critical"
+
+        return {"health_score": health_score, "status": status}
 
 def main():
     print("Проверка состояния системы прогнозирования спроса...")

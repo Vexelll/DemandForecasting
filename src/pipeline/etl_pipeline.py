@@ -50,8 +50,6 @@ class ETLPipeline:
 
         # Обновление исторических данных
         print("Обновление исторических данных...")
-
-
         self.history_manager.update_history(cleaned_data)
 
 
@@ -70,19 +68,14 @@ class ETLPipeline:
 
         # Добавление лаговых признаков из истории
         print("Добавление лаговых признаков...")
-        lag_features = []
+        lag_df = self.history_manager.calculate_lags_batch(
+            df["Store"].values,
+            df["Date"].values,
+            lag_days=[1, 7, 14, 28]
+        )
 
-        for idx, row in df.iterrows():
-            lags = self.history_manager.calculate_lags(
-                row["Store"],
-                row["Date"],
-                lag_days=[1, 7, 14, 28]
-            )
-            lag_features.append(lags)
-
-        # Объединение лагов с основными признаками
-        lag_df = pd.DataFrame(lag_features, index=df.index)
-        df = pd.concat([df, lag_df], axis=1)
+        # Объединение результатов
+        df = pd.merge(df, lag_df, on=["Store", "Date"], how="left")
 
         # Определение финальных признаков
         exclude_columns = [
