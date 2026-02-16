@@ -208,19 +208,19 @@ class TestDatabaseManager(unittest.TestCase):
         self.assertIn("PredictedSales", loaded.columns)
         self.assertIn("ActualSales", loaded.columns)
 
-    # def test_get_latest_predictions(self):
-    #     """Тест получения последних прогнозов"""
-    #     # Сохраняем два набора прогнозов
-    #     preds_1 = self._create_test_predictions(n_stores=1, n_days=3)
-    #     preds_2 = self._create_test_predictions(n_stores=2, n_days=5)
+    def test_get_latest_predictions(self):
+        """Тест получения последних прогнозов"""
+        # Сохраняем два набора прогнозов
+        preds_1 = self._create_test_predictions(n_stores=1, n_days=3)
+        preds_2 = self._create_test_predictions(n_stores=2, n_days=5)
 
-    #     self.db.save_predictions(preds_1, "run_old")
-    #     self.db.save_predictions(preds_2, "run_new")
+        self.db.save_predictions(preds_1, "run_old")
+        self.db.save_predictions(preds_2, "run_new")
 
-    #     latest = self.db.get_latest_predictions()
+        latest = self.db.get_latest_predictions()
 
-    #     # Должны вернуться прогнозы последнего запуска
-    #     self.assertEqual(len(latest), 10)  # 2 магазина * 5 дней
+        # Должны вернуться прогнозы последнего запуска
+        self.assertEqual(len(latest), 10)  # 2 магазина * 5 дней
 
     def test_list_prediction_runs(self):
         """Тест получения списка запусков"""
