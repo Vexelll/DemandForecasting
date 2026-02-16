@@ -11,9 +11,9 @@
 - [Запуск системы](#Запуск-системы)
 - [Работа с данными](#Работа-с-данными)
 - [Мониторинг и логирование](#Мониторинг-и-логирование)
-- Результаты и производительность
-- Ограничения
-- Дальнейшее развитие
+- [Результаты и производительность](#Результаты-и-производительность)
+- [Ограничения](#Ограничения)
+- [Дальнейшее развитие](#Дальнейшее-развитие)
 
 
 ---
@@ -92,13 +92,13 @@ demand_forecasting/
 
 ---
 # Установка и настройка
-1. **Клонирование репозитория**
+## 1. Клонирование репозитория
 ```
 git clone https://github.com/your-org/demand_forecasting.git
 cd demand_forecasting
 ```
 
-2. **Создание виртуального окружения и установка зависимостей**
+## 2. Создание виртуального окружения и установка зависимостей
 Linux / macOS / WSL:
 ```
 python3 -m venv venv
@@ -113,25 +113,31 @@ pip install -r requirements.txt
 ```
 **Примечание**: Airflow требует окружения **Unix-подобной ОС**. На Windows рекомендуется использовать **WSL2** (см. раздел ниже).
 
-3. **Настройка WSL (только для Windows)**
+## 3. Настройка WSL (только для Windows)
 Если вы работаете на Windows и планируете запускать Airflow, выполните:
-```python scripts/setup_wsl.py```
+```
+python scripts/setup_wsl.py
+```
 
 Скрипт автоматически:
 - проверит наличие WSL2;
 - создаст виртуальное окружение внутри WSL;
 - установит все зависимости из ```requirements.txt```.
 
-4. **Инициализация базы данных**
-При первом запуске система автоматически создаёт SQLite‑файл ```demand_forecasting.db``` в каталоге ```data/```.
-Для миграции существующих данных из ```sales_history.pkl``` и ```predictions.csv``` выполните:
-```python -m src.database.migrate_to_db```
+## 4. Инициализация базы данных
+При первом запуске система автоматически создаёт SQLite‑файл ```demand_forecasting.db``` в каталоге ```data/```.            
+Для миграции существующих данных из ```sales_history.pkl``` и ```predictions.csv``` выполните:            
+```
+python -m src.database.migrate_to_db
+```
 
 ---
 # Запуск системы
-1. **Запуск Airflow (оркестратор)**
+## 1. Запуск Airflow (оркестратор)
 Вариант А - через WSL (рекомендуется на Windows):
-```python scripts/run_airflow.py```
+```
+python scripts/run_airflow.py
+```
 
 Скрипт:
 - синхронизирует DAG‑файлы и исходный код в WSL;
@@ -148,12 +154,16 @@ airflow api-server --port 8080 -D
 airflow scheduler -D
 ```
 
-2. **Запуск дашборда**
-```python src/visualization/dashboard.py```
+## 2. Запуск дашборда
+```
+python src/visualization/dashboard.py
+```
 Дашборд будет доступен по адресу ```http://localhost:8050```.
 
-3. **Ручной запуск DAG (опционально)**
-```airflow dags trigger demand_forecasting_pipeline```
+## 3. Ручной запуск DAG (опционально)
+```
+airflow dags trigger demand_forecasting_pipeline
+```
 
 ---
 # Работа с данными
@@ -166,13 +176,13 @@ airflow scheduler -D
 ## Этапы обработки
 1. **Загрузка и объединение** - ```DataPreprocessor.load_and_merge_data```.
 2. **Очистка** - фильтрация закрытых магазинов (```Open == 1```), продажи > 0, обработка пропусков, удаление дубликатов.
-3. **Инжиниринг признаков** - ```FeatureEngineer```:
-  - временные (Year, Month, Week, DayOfWeek_sin/cos, IsWeekend, IsMonthStart);
-  - промо‑признаки (PromoSequence, DaysSinceLastPromo, IsPromoStart/End);
-  - праздничные (IsHoliday, WasHolidayYesterday, IsChristmas, IsEaster);
-  - магазинные (One‑Hot encoding StoreType, Assortment);
-  - конкурентные (CompetitionOpenMonths, CompetitionNear/Far);
-  - лаговые (SalesLag_1,7,14,28; RollingMean/Std/Min/Max) - рассчитываются через ```SalesHistoryManager``` на основе всей доступной истории.
+3. **Инжиниринг признаков** - ```FeatureEngineer```:            
+    - временные (Year, Month, Week, DayOfWeek_sin/cos, IsWeekend, IsMonthStart);        
+    - промо‑признаки (PromoSequence, DaysSinceLastPromo, IsPromoStart/End);        
+    - праздничные (IsHoliday, WasHolidayYesterday, IsChristmas, IsEaster);        
+    - магазинные (One‑Hot encoding StoreType, Assortment);        
+    - конкурентные (CompetitionOpenMonths, CompetitionNear/Far);        
+    - лаговые (SalesLag_1,7,14,28; RollingMean/Std/Min/Max) - рассчитываются через ```SalesHistoryManager``` на основе всей доступной истории.
 4. **Формирование финального датасета** - исключение служебных колонок, сохранение в ```final_dataset.csv```.
 
 ---
@@ -208,11 +218,14 @@ airflow scheduler -D
 
 ---
 # Результаты и производительность
+
 | Модель | MAPE (%) | R² | 	MAE (€) | RMSE (€) | Время обучения |
-| --------------- | --------------- | --------------- |
+| --------------- | --------------- | --------------- | --------------- | --------------- | --------------- |
 | **LightGBM** | 9.70 | 0.915 | 652.5 | 932.7 | ~15 мин |
 | **RandomForest** | 9.79 | 0.907 | 665.5 | 980.1 | 212 с |
 | **LinearRegression** | 12.69 | 0.848 | 849.3 | 1248.7 | 2 с |
 | **MeanBaseline**	 | 36.28 | -0.019 | 2326.1 | 3237.8 | 0.02 с |
-Включая 100 итераций Optuna (на полном наборе данных ~700 тыс. строк).
+
+Включая 100 итераций Optuna (на полном наборе данных ~700 тыс. строк).      
 **Тестовый период**: последние 30% временной шкалы (все магазины).
+
