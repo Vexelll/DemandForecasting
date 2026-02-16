@@ -1,7 +1,7 @@
 import pytest
 import numpy as np
 import pandas as pd
-import unittest
+import logging
 import tempfile
 from pathlib import Path
 import shutil
@@ -9,15 +9,17 @@ from src.data.preprocessing import DataPreprocessor
 from src.features.feature_engineering import FeatureEngineer
 from src.data.history_manager import SalesHistoryManager
 
+logger = logging.getLogger(__name__)
+
 class TestDataPreprocessor:
     """Тесты для модуля предобработки данных"""
 
     def setup_method(self):
         """Инициализация тестового окружения"""
-        self.preprocessor = DataPreprocessor(verbose=False)
+        self.preprocessor = DataPreprocessor()
         self.test_dir = Path(tempfile.mkdtemp())
 
-    def teardowm_method(self):
+    def teardown_method(self):
         """Очистка тестового окружения"""
         if self.test_dir.exists():
             shutil.rmtree(self.test_dir)
@@ -136,11 +138,8 @@ class TestDataPreprocessor:
         result = self.preprocessor.clean_data(test_data)
 
         # Должна остаться только одна запись с валидной датой
-        assert len(result) == 2
-
-        valid_dates = result["Date"].dropna()
-        assert len(valid_dates) == 1
-        assert valid_dates.iloc[0] == pd.Timestamp("2024-01-02")
+        assert len(result) == 1
+        assert result.iloc[0]["Date"] == pd.Timestamp("2024-01-02")
 
 
     def test_save_processed_data(self):
@@ -176,7 +175,7 @@ class TestFeatureEngineer:
 
     def setup_method(self):
         """Инциализация тестового окружения"""
-        self.engineer = FeatureEngineer(verbose=False)
+        self.engineer = FeatureEngineer()
 
     def test_temporal_features_creation(self):
         """Тест создания временных признаков"""
@@ -268,7 +267,7 @@ class TestFeatureEngineer:
         assert "PromoSequenceLength" in store_1_data.columns
         assert "IsPromoStart" in store_1_data.columns
 
-        # Проверяем что IsPromoStart определен для первой записи магазина
+        # Проверяем, что IsPromoStart определен для первой записи магазина
         assert store_1_data["IsPromoStart"].iloc[0] in [0, 1]
 
     def test_create_holiday_features(self):
@@ -337,8 +336,7 @@ class TestFeatureEngineer:
             # Лаговые признаки могут иметь NaN для первых записей
             non_lag_features = [f for f in features if "Lag" not in f and "Rolling" not in f]
             if non_lag_features:
-                assert result[features].isna().sum().sum() == 0, \
-                    f"Найдены пропуски в признаках: {result[features].isna().sum().to_dict()}"
+                assert result[features].isna().sum().sum() == 0, f"Найдены пропуски в признаках: {result[features].isna().sum().to_dict()}"
 
         # Проверяем статистику
         stats = self.engineer.get_feature_statistics()
@@ -351,8 +349,14 @@ class TestHistoryManager:
     def setup_method(self):
         """Инициализация тестового окружения"""
         self.test_dir = Path(tempfile.mkdtemp())
+        # Путь для pickle-файла
         self.history_file = self.test_dir / "test_history.pkl"
-        self.manager = SalesHistoryManager(str(self.history_file))
+        # Путь для временной БД
+        self.db_path = self.test_dir / "test_history.db"
+        self.manager = SalesHistoryManager(
+            history_file = str(self.history_file),
+            db_path = self.db_path
+        )
 
     def teardown_method(self):
         """Очистка тестового окружения"""
@@ -360,7 +364,7 @@ class TestHistoryManager:
             shutil.rmtree(self.test_dir)
 
     def test_history_operations_basic(self):
-        """Базовые тесты операций с историей"""
+        """Базовые тесты операций с историей с проверкой сохранения в БД"""
         test_data = pd.DataFrame({
             "Store": [1, 1, 2],
             "Date": pd.to_datetime(["2024-01-01", "2024-01-02", "2024-01-01"]),
@@ -374,8 +378,9 @@ class TestHistoryManager:
         # Тест обновления истории
         self.manager.update_history(test_data)
 
-        # Проверяем, что история сохранена
-        assert self.history_file.exists()
+        # Проверяем, что история сохранена (файл .pkl может отсутствовать)
+        # Но данные должны быть в БД
+        assert self.db_path.exists()
         assert len(self.manager.history) == 3
 
         # Тест получения истории магазина
@@ -391,14 +396,22 @@ class TestHistoryManager:
         assert "date_range" in stats
 
         # Тест расчета лагов
-        lags = self.manager.calculate_lags(1, pd.to_datetime("2024-01-03"))
-        assert isinstance(lags, dict)
+        lags = self.manager.calculate_lags_batch([1], ["2024-01-03"])
+        assert isinstance(lags, pd.DataFrame)
         assert "SalesLag_1" in lags
         assert "RollingMean_7" in lags
         assert "RollingStd_7" in lags
 
+        # Проверка, что данные загружаются из БД при новом экземпляре
+        new_manager = SalesHistoryManager(
+            history_file = str(self.history_file),
+            db_path = self.db_path
+        )
+        assert len(new_manager.history) == 3
+        assert new_manager.get_history_stats()["total_records"] == 3
+
     def test_history_update_with_duplicates(self):
-        """Тест обновления истории с дублирующимися записями"""
+        """Тест обновления истории с дублирующимися записями (upsert в БД)"""
         initial_data = pd.DataFrame({
             "Store": [1, 1],
             "Date": pd.to_datetime(["2024-01-01", "2024-01-02"]),
@@ -426,13 +439,26 @@ class TestHistoryManager:
         self.manager.update_history(update_data)
 
         # Проверяем, что дубликат обновился, а не добавился
-        assert len(self.manager.history) == 3 # 2 уникальных записи для магазина 1 + 1 для магазина 2
+        assert len(self.manager.history) == 3 # 2 для магазина 1 + 1 для магазина 2
 
         # Проверяем, что продажи обновились
         store_1_data = self.manager.history[self.manager.history["Store"] == 1]
         jan_2_sales = store_1_data[store_1_data["Date"] == pd.Timestamp("2024-01-02")]["Sales"].iloc[0]
 
         assert jan_2_sales == 1500.0 # Обновленное значение
+
+        # Проверка персистентности в БД
+        new_manager = SalesHistoryManager(
+            history_file = str(self.history_file),
+            db_path = self.db_path
+        )
+
+        assert len(new_manager.history) == 3
+
+        store_1_data_new = new_manager.history[new_manager.history["Store"] == 1]
+        jan_2_sales_new = store_1_data_new[store_1_data_new["Date"] == pd.Timestamp("2024-01-02")]["Sales"].iloc[0]
+
+        assert jan_2_sales_new == 1500.0
 
     def test_get_latest_sales(self):
         """Тест получения последних продаж"""
@@ -456,12 +482,12 @@ class TestHistoryManager:
         assert latest_sales is not None
         assert len(latest_sales) <= 5
 
-        # Проверяем что это действительно последние продажи перед максимальной датой
+        # Проверяем, что это действительно последние продажи перед максимальной датой
         max_date = self.manager.history["Date"].max()
         assert all(latest_sales.index < max_date)
 
     def test_cleanup_old_data(self):
-        """Тест очистки устаревших данных"""
+        """Тест очистки устаревших данных c проверкой сохранения в БД"""
         # Создаем данные с разными датами
         old_data = pd.DataFrame({
             "Store": [1, 1],
@@ -498,6 +524,15 @@ class TestHistoryManager:
         # Проверяем, что остались только новые данные
         remaining_dates = self.manager.history["Date"]
         assert all(remaining_dates >= pd.Timestamp("2024-01-01"))
+
+        # Проверка, что изменения сохранения в БД
+        new_manager = SalesHistoryManager(
+            history_file = str(self.history_file),
+            db_path = self.db_path
+        )
+
+        assert len(new_manager.history) == initial_count - removed_count
+        assert (pd.to_datetime(new_manager.history["Date"]) >= pd.Timestamp("2024-01-01")).all()
 
     def test_export_history(self):
         """Тест экспорта исторических данных"""
@@ -548,7 +583,6 @@ class TestEdgeCases:
         assert isinstance(result, pd.DataFrame)
         assert isinstance(features, list)
         assert len(result) == 0
-        assert isinstance(features, list)
 
     def test_preprocessor_empty_data(self):
         """Тест предобработки с пустыми данными"""
@@ -566,21 +600,26 @@ class TestEdgeCases:
         assert len(result) == 0
 
     def test_history_manager_empty_history(self):
-        """Тест менеджера истории с пустой базой"""
-        test_dir = Path(tempfile.mkdtemp())
-        history_file = test_dir / "empty_history.pkl"
-        manager = SalesHistoryManager(str(history_file))
+        """Тест менеджера истории с пустой базой (новая БД)"""
 
-        # Проверяем статистику пустой истории
-        stats = manager.get_history_stats()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Путь к новой БД, которая еще не создавалась
+            test_dir = Path(tmpdir)
+            empty_db_path = test_dir / "empty.db"
+            manager = SalesHistoryManager(
+                history_file = str(test_dir / "empty.pkl"),
+                db_path = empty_db_path
+            )
 
-        assert stats["total_records"] == 0
-        assert stats["unique_stores"] == 0
-        assert stats["date_range"] == "База данных пуста"
+            # Проверяем статистику пустой истории
+            stats = manager.get_history_stats()
 
-        # Очистка
-        if test_dir.exists():
-            shutil.rmtree(test_dir)
+            assert stats["total_records"] == 0
+            assert stats["unique_stores"] == 0
+            assert stats["date_range"] == "База данных пуста"
+
+            # Дополнительно проверяем, что БД создалась
+            assert empty_db_path.exists()
 
     def test_invalid_data_types(self):
         """Тест обработки невалидных типов данных"""
@@ -610,40 +649,25 @@ class TestEdgeCases:
 
 def run_basic_tests():
     """Запуск базовых тестов"""
-    print("Запуск тестов системы...")
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
+    )
+    logger = logging.getLogger(__name__)
 
-    test_classes = [
-        TestDataPreprocessor,
-        TestFeatureEngineer,
-        TestHistoryManager,
-        TestEdgeCases
-    ]
+    logger.info("Запуск тестов системы...")
 
-    results = {
-        "total_tests": 0,
-        "passed_tests": 0,
-        "failed_tests": 0
-    }
+    exit_code = pytest.main([__file__, "-v", "--tb=short", "-q"])
 
-    for test_class in test_classes:
-        test_suite = unittest.TestLoader().loadTestsFromTestCase(test_class)
-        test_runner = unittest.TextTestRunner(verbosity=1)
-        test_result = test_runner.run(test_suite)
+    if exit_code == 0:
+        logger.info("Все тесты пройдены успешно")
+    else:
+        logger.error(f"Тесты завершились с кодом: {exit_code}")
 
-        results["total_tests"] += test_result.testsRun
-        results["passed_tests"] += test_result.testsRun - len(test_result.failures) - len(test_result.errors)
-        results["failed_tests"] += len(test_result.failures) + len(test_result.errors)
-
-    # Вывод итогов
-    print(f"\nИтоги тестирования:")
-    print(f"Всего тестов: {results["total_tests"]}")
-    print(f"Успешно: {results["passed_tests"]}")
-    print(f"Сбоев: {results["failed_tests"]}")
-
-    success_rate = (results["passed_tests"] / results["total_tests"] * 100) if results["total_tests"] > 0 else 0
-    print(f"Процент успеха: {success_rate:.1f}%")
-
-    return 0 if results["failed_tests"] == 0 else 1
+    return exit_code
 
 if __name__ == "__main__":
-    unittest.main(verbosity=2)
+    # При прямом запуске - используем pytest
+    exit_code = run_basic_tests()
+    exit(exit_code)

@@ -1,15 +1,26 @@
 import pandas as pd
 import joblib
 import numpy as np
+import logging
 from pathlib import Path
 from typing import Tuple, Optional, List
 from src.data.preprocessing import DataPreprocessor
 from src.features.feature_engineering import FeatureEngineer
 from src.data.history_manager import SalesHistoryManager
+from src.database.database_manager import DatabaseManager
 from config.settings import MODELS_PATH, DATA_PATH
 
 class ETLPipeline:
+    # Колонки, исключаемые из финальных признаков
+    EXCLUDE_COLUMNS = [
+        "Date", "Sales", "Customers", "Open",
+        "StateHoliday", "StoreType", "Assortment",
+        "PromoInterval", "PromoSequence"
+    ]
+
     def __init__(self, model_path: Optional[Path] = None) -> None:
+        self.logger = logging.getLogger(__name__)
+
         if model_path is None:
             model_path = MODELS_PATH / "lgbm_final_model.pkl"
 
@@ -23,9 +34,14 @@ class ETLPipeline:
         self.cleaned_data: Optional[pd.DataFrame] = None
         self.processed_data: Optional[pd.DataFrame] = None
 
+        # Инициализация БД
+        self.db = DatabaseManager.create_database_manager()
+
+        self.logger.info(f"ETL-пайплайн инициализирован. Модель: {model_path}")
+
     def extract(self, new_data_path: Path, stores_data_path: Path) -> pd.DataFrame:
         """Извлечение и валидация исходных данных"""
-        print("Извлечение данных...")
+        self.logger.info("Извлечение данных...")
 
         if not new_data_path.exists():
             raise FileNotFoundError(f"Файл с новыми данными не найден: {new_data_path}")
@@ -34,27 +50,27 @@ class ETLPipeline:
 
         try:
             new_data = self.preprocessor.load_and_merge_data(new_data_path, stores_data_path)
-            print(f"Данные извлечены: {new_data.shape[0]} записей, {new_data.shape[1]} признаков")
+            self.logger.info(f"Данные извлечены: {new_data.shape[0]} записей, {new_data.shape[1]} признаков")
             return new_data
         except Exception as e:
-            print(f"Ошибка извлечения данных: {e}")
+            self.logger.error(f"Ошибка извлечения данных: {e}")
             raise
 
     def transform(self, data: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
         """Преобразование данных: очистка, feature engineering, обновление истории"""
-        print("Преобразование данных...")
+        self.logger.info("Преобразование данных...")
 
         # Очистка данных
         cleaned_data = self.preprocessor.clean_data(data)
-        print(f"Данные очищены: {cleaned_data.shape[0]} записей")
+        self.logger.info(f"Данные очищены: {cleaned_data.shape[0]} записей")
 
         # Обновление исторических данных
-        print("Обновление исторических данных...")
+        self.logger.info("Обновление исторических данных...")
         self.history_manager.update_history(cleaned_data)
 
 
         stats = self.history_manager.get_history_stats()
-        print(f"История обновлена: {stats["total_records"]} записей, {stats["unique_stores"]} магазинов")
+        self.logger.info(f"История обновлена: {stats["total_records"]} записей, {stats["unique_stores"]} магазинов")
 
         # Feature Engineering
         df = cleaned_data.copy()
@@ -65,9 +81,10 @@ class ETLPipeline:
         df = self.feature_engineer.create_promo_features(df)
         df = self.feature_engineer.create_holiday_features(df)
         df = self.feature_engineer.create_store_features(df)
+        df = self.feature_engineer.create_competition_features(df)
 
         # Добавление лаговых признаков из истории
-        print("Добавление лаговых признаков...")
+        self.logger.info("Добавление лаговых признаков...")
         lag_df = self.history_manager.calculate_lags_batch(
             df["Store"].values,
             df["Date"].values,
@@ -77,26 +94,55 @@ class ETLPipeline:
         # Объединение результатов
         df = pd.merge(df, lag_df, on=["Store", "Date"], how="left")
 
+        # Заполнение пропусков в лаговых признаков
+        df = self.feature_engineer.fill_lag_missing_values(df)
+
+        lag_columns = [col for col in df.columns if "Lag" in col or "Rolling" in col]
+        remaining_na = df[lag_columns].isna().sum().sum()
+        self.logger.info(f"Лаговые признаки добавлены. Остаток NaN: {remaining_na}")
+
         # Определение финальных признаков
-        exclude_columns = [
-            "Date", "Sales", "Customers", "Open", "StateHoliday", "StoreType", "Assortment", "PromoInterval"
-        ]
-        feature_columns = [col for col in df.columns if col not in exclude_columns]
+        feature_columns = [col for col in df.columns if col not in self.EXCLUDE_COLUMNS]
+
+        # Валидация совпадения признаков с моделью
+        self._validate_feature_columns(feature_columns)
 
         final_data = df[feature_columns + ["Sales"]]
 
-        print(f"Преобразование завершено: {final_data.shape[1]} признаков")
+        self.logger.info(f"Преобразование завершено: {final_data.shape[1]} признаков")
         self.cleaned_data = cleaned_data
         self.processed_data = final_data
 
         return final_data, feature_columns
 
-    def load_predictions(self, predictions: np.ndarray, output_path: Path) -> pd.DataFrame:
-        """Сохранение прогнозов и метаданных"""
-        print("Сохранение прогнозов")
+    def _validate_feature_columns(self, feature_columns: List[str]) -> None:
+        """Проверка совпадения признаков с ожидаемыми моделью"""
+        if not hasattr(self.model, "feature_name_"):
+            self.logger.debug("Модель не содержит информации о признаках, пропуск валидации")
+            return
+
+        model_features = set(self.model.feature_name_)
+        pipeline_features = set(feature_columns)
+
+        # Признаки, которые ожидает модель, но нет в пайплайне
+        missing_features = model_features - pipeline_features
+        if missing_features:
+            self.logger.warning(f"Признаки отсутствуют в данных пайплайна (будут NaN): {sorted(missing_features)}")
+
+        # Лишнии признаки, которые модель не ожидает
+        extra_features = pipeline_features - model_features
+        if extra_features:
+            self.logger.debug(f"Дополнительные признаки (будут проигнорированы моделью): {sorted(extra_features)}")
+
+    def store_predictions(self, predictions: np.ndarray, output_path: Path) -> pd.DataFrame:
+        """Load-фаза ETL: сохранение прогнозов в хранилище данных (БД/файлы)"""
+        self.logger.info("Сохранение прогнозов...")
 
         if self.cleaned_data is None:
             raise ValueError("Очищенные данные не найдены. Сначала выполните transform().")
+
+        if len(predictions) != len(self.cleaned_data):
+            raise ValueError(f"Несоответствие размеров: predictions={len(predictions)}, cleaned_data={len(self.cleaned_data)}")
 
         # Создание DateFrame c результатами
         results_df = pd.DataFrame({
@@ -107,34 +153,41 @@ class ETLPipeline:
         })
 
         # Добавление метрик качества
-        results_df["AbsoluteError"] = abs(results_df["ActualSales"] - results_df["PredictedSales"])
-        results_df["PercentageError"] = results_df["PercentageError"] = (results_df["AbsoluteError"] / self.cleaned_data["Sales"]) * 100
+        results_df["AbsoluteError"] = np.abs(results_df["ActualSales"] - results_df["PredictedSales"])
+        results_df["PercentageError"] = np.where(results_df["ActualSales"] > 0, (results_df["AbsoluteError"] / results_df["ActualSales"]) * 100, 0.0)
 
         try:
+            # Создание директории, если не существует
+            output_path.parent.mkdir(parents=True, exist_ok=True)
             results_df.to_csv(output_path, index=False)
 
-            # Дополнительная статистика
+            # Статистика прогнозов
             total_predictions = len(results_df)
-            avg_errors = results_df["AbsoluteError"].mean()
+            avg_error = results_df["AbsoluteError"].mean()
             mape = results_df["PercentageError"].mean()
+            median_error = results_df["AbsoluteError"].median()
 
-            print(f"Прогнозы сохранены: {output_path}")
-            print("Статистика прогнозов:")
-            print(f"Всего прогнозов: {total_predictions}")
-            print(f"Средняя абсолютная ошибка: {avg_errors:.2f} €")
-            print(f"MAPE: {mape:.2f}%")
-            print(f"Магазинов: {results_df["Store"].nunique()}")
-            print(f"Диапазон дат: {results_df["Date"].min()} до {results_df["Date"].max()}")
+            self.logger.info(f"Прогнозы сохранены: {output_path}")
+            self.logger.info(f"Статистика: {total_predictions:,} прогнозов, {results_df['Store'].nunique()} магазинов, диапазон дат: {results_df['Date'].min()} - {results_df['Date'].max()}")
+            self.logger.info(f"Качество: MAE={avg_error:,.2f} €, MedAE={median_error:,.2f} €, MAPE={mape:.2f}%")
 
+            # Сохранение прогнозов в БД
+            if self.db is not None:
+                try:
+                    run_id = DatabaseManager.generate_run_id()
+                    self.db.save_predictions(results_df, run_id)
+                    self.logger.info(f"Прогнозы сохранены в БД (run_id={run_id})")
+                except Exception as e:
+                    self.logger.warning(f"Ошибка сохранения прогнозов в БД: {e}")
             return results_df
 
         except Exception as e:
-            print(f"Ошибка сохранения прогнозов: {e}")
+            self.logger.error(f"Ошибка сохранения прогнозов: {e}")
             raise
 
     def run_pipeline(self, new_data_path: Path, store_data_path: Path, output_path: Path) -> pd.DataFrame:
         """Запуск полного ETL-пайплайна"""
-        print("Запуск ETL-пайплайна прогнозирования спроса")
+        self.logger.info("Запуск ETL-пайплайна прогнозирования спроса")
 
         try:
             # Extract
@@ -148,22 +201,29 @@ class ETLPipeline:
                 raise ValueError("Нет данных для прогнозирования после преобразований")
 
             # Predict
-            print("Генерация прогнозов...")
+            self.logger.info("Генерация прогнозов...")
             predictions = self.model.predict(processed_data[features])
 
             # Load
-            results = self.load_predictions(predictions, output_path)
+            results = self.store_predictions(predictions, output_path)
 
-            print("ETL-пайплайн успешно завершен")
+            self.logger.info("ETL-пайплайн успешно завершен")
 
             return results
 
         except Exception as e:
-            print(f"Критическая ошибка в ETL-пайплайне: {e}")
+            self.logger.error(f"Критическая ошибка в ETL-пайплайне: {e}")
             raise
 
 if __name__ == "__main__":
-    print("Тестирование ETL-пайплайна...")
+    # Настройка логирования
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+
+    logger = logging.getLogger(__name__)
+    logger.info("Тестирование ETL-пайплайна...")
 
     pipeline = ETLPipeline()
     results = pipeline.run_pipeline(
@@ -172,4 +232,4 @@ if __name__ == "__main__":
         DATA_PATH / "outputs/predictions.csv"
     )
 
-    print("Тестирование завершено успешно")
+    logger.info("Тестирование завершено успешно")

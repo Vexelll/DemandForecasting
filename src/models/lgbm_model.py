@@ -1,16 +1,18 @@
 import json
-import lightgbm as lgb
-import matplotlib.pyplot as plt
-import numpy as np
-import optuna
-import joblib
-import pandas as pd
 import logging
 from pathlib import Path
-from typing import Dict, Any, Optional, Tuple, List, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
+
+import joblib
+import lightgbm as lgb
+import numpy as np
+import optuna
+import pandas as pd
 from sklearn.model_selection import TimeSeriesSplit
-from src.models.base_model import BaseModels
+
 from config.settings import DATA_PATH, MODELS_PATH, REPORTS_PATH, all_stores_time_split
+from src.models.base_model import BaseModels
+
 
 class LGBMModel(BaseModels):
     def __init__(self):
@@ -19,7 +21,7 @@ class LGBMModel(BaseModels):
         self.best_params: Optional[Dict[str, Any]] = None
         self.study: Optional[optuna.Study] = None
         self.feature_names: List[str] = []
-        self.logger = logging.getLogger("lgbm_model")
+        self.logger = logging.getLogger(__name__)
 
     def _validate_input_data(self, X_train: pd.DataFrame, X_test: pd.DataFrame, y_train: pd.Series, y_test: pd.Series) -> None:
         """Валидация входных данных для обучения"""
@@ -42,68 +44,106 @@ class LGBMModel(BaseModels):
             "metric": "mape",
             "verbosity": -1,
             "boosting_type": "gbdt",
-            "lambda_l1": trial.suggest_float("lambda_l1", 1e-8, 5.0, log=True),
-            "lambda_l2": trial.suggest_float("lambda_l2", 1e-8, 5.0, log=True),
-            "num_leaves": trial.suggest_int("num_leaves", 63, 255),
-            "max_depth": trial.suggest_int("max_depth", 5, 12),
-            "min_data_in_leaf": trial.suggest_int("min_data_in_leaf", 20, 200),
-            "feature_fraction": trial.suggest_float("feature_fraction", 0.6, 0.9),
-            "bagging_fraction": trial.suggest_float("bagging_fraction", 0.6, 0.9),
+            "lambda_l1": trial.suggest_float("lambda_l1", 1e-8, 10.0, log=True),
+            "lambda_l2": trial.suggest_float("lambda_l2", 1e-8, 10.0, log=True),
+            "num_leaves": trial.suggest_int("num_leaves", 31, 127),
+            "max_depth": trial.suggest_int("max_depth", 4, 10),
+            "min_data_in_leaf": trial.suggest_int("min_data_in_leaf", 100, 500),
+            "feature_fraction": trial.suggest_float("feature_fraction", 0.4, 0.95),
+            "bagging_fraction": trial.suggest_float("bagging_fraction", 0.4, 0.95),
             "bagging_freq": trial.suggest_int("bagging_freq", 1, 7),
-            "min_child_samples": trial.suggest_int("min_child_samples", 10, 100),
-            "min_child_weight": trial.suggest_float("min_child_weight", 1e-8, 5.0, log=True),
-            "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.2, log=True),
-            "max_bin": trial.suggest_int("max_bin", 128, 512),
+            "min_child_weight": trial.suggest_float("min_child_weight", 1e-5, 10.0, log=True),
+            "learning_rate": trial.suggest_float("learning_rate", 0.005, 0.1, log=True),
+            "max_bin": trial.suggest_int("max_bin", 255, 500),
             "extra_trees": trial.suggest_categorical("extra_trees", [True, False]),
-            "path_smooth": trial.suggest_float("path_smooth", 0.0, 5.0),
-            "random_state": 42
+            "path_smooth": trial.suggest_float("path_smooth", 0.0, 10.0),
+            "random_state": 42,
         }
 
-        tscv = TimeSeriesSplit(n_splits=2)
+        # Создаём временной ключ и группируем данные
+        time_key = pd.to_datetime(X["Year"].astype(str) + "-W" + X["Week"].astype(str).str.zfill(2) + "-1", format="%Y-W%W-%w")
+        unique_periods = sorted(time_key.unique())
+
+        # Создаём массив индексов периодов (каждый период = один индекс)
+        period_indices = np.arange(len(unique_periods))
+
+        tscv = TimeSeriesSplit(n_splits=5)
         scores = []
 
-        for train_idx, val_idx in tscv.split(X):
-            X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
-            y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]
+        for fold_idx, (train_period_idx, val_period_idx) in enumerate(tscv.split(period_indices)):
+            # Получаем периоды для train и validation
+            train_periods = [unique_periods[i] for i in train_period_idx]
+            val_periods = [unique_periods[i] for i in val_period_idx]
 
-            model = lgb.LGBMRegressor(**params, n_estimators=1000)
+            # Маски для фильтрации данных по периодам
+            train_mask = time_key.isin(train_periods)
+            val_mask = time_key.isin(val_periods)
+
+            X_train, y_train = X[train_mask], y[train_mask]
+            X_val, y_val = X[val_mask], y[val_mask]
+
+            model = lgb.LGBMRegressor(**params, n_estimators=2000)
             model.fit(
-                X_train, y_train,
+                X_train,
+                y_train,
                 eval_set=[(X_val, y_val)],
                 eval_metric="mape",
                 callbacks=[
-                    lgb.early_stopping(100, verbose=False),
+                    lgb.early_stopping(300, verbose=False),
                     lgb.log_evaluation(False)
-                ]
+                ],
             )
 
             y_pred = model.predict(X_val)
             mape = np.mean(np.abs((y_val - y_pred) / np.maximum(y_val, 1))) * 100
             scores.append(mape)
 
+            trial.report(mape, fold_idx)
+            if trial.should_prune():
+                raise optuna.TrialPruned()
+
         return np.mean(scores)
 
-    def optimize_hyperparameters(self, X: pd.DataFrame, y: pd.Series, n_trials: int = 70) -> Dict[str, Any]:
+    def optimize_hyperparameters(self, X: pd.DataFrame, y: pd.Series, n_trials: int = 100) -> Dict[str, Any]:
         """Оптимизация гиперпараметров с использованием Optuna"""
         self.logger.info("Начало оптимизации гиперпараметров LightGBM")
 
         sampler = optuna.samplers.TPESampler(seed=42)
-        self.study = optuna.create_study(direction="minimize", sampler=sampler)
 
-        self.study.optimize(lambda trial: self.objective(trial, X, y), n_trials=n_trials)
+        # Добавляем MedianPruner для раннего отсечения неперспективных trials
+        pruner = optuna.pruners.MedianPruner(
+            n_startup_trials=10,  # Минимум trials перед началом pruning
+            n_warmup_steps=2,  # Пропустить первые 2 фолда перед pruning
+            interval_steps=1,  # Проверка pruning на каждом фолде
+        )
+
+        self.study = optuna.create_study(direction="minimize", sampler=sampler, pruner=pruner)
+
+        self.study.optimize(
+            lambda trial: self.objective(trial, X, y),
+            n_trials=n_trials,
+            show_progress_bar=True,  # Прогресс-бар
+        )
 
         self.best_params = self.study.best_params
-        self.best_params.update({
-            "objective": "regression",
-            "metric": "mape",
-            "verbosity": -1,
-            "boosting_type": "gbdt",
-            "n_estimators": 20000,
-            "random_state": 42
-        })
+        self.best_params.update(
+            {
+                "objective": "regression",
+                "metric": "mape",
+                "verbosity": -1,
+                "boosting_type": "gbdt",
+                "n_estimators": 20000,
+                "random_state": 42,
+            }
+        )
+
+        # Логирование статистики pruning
+        pruned_trials = len([t for t in self.study.trials if t.state == optuna.trial.TrialState.PRUNED])
+        complete_trials = len([t for t in self.study.trials if t.state == optuna.trial.TrialState.COMPLETE])
 
         self.logger.info(f"Оптимизация завершена. Лучший MAPE: {self.study.best_value:.2f}%")
         self.logger.info(f"Лучшие параметры: {self.best_params}")
+        self.logger.info(f"Trials: {complete_trials} завершено, {pruned_trials} отсечено (pruned)")
 
         return self.best_params
 
@@ -119,11 +159,30 @@ class LGBMModel(BaseModels):
         if self.best_params is None:
             self.best_params = self.optimize_hyperparameters(X_train, y_train)
 
+        # Создаём временной ключ
+        time_key = pd.to_datetime(X_train["Year"].astype(str) + "-W" + X_train["Week"].astype(str).str.zfill(2) + "-1", format="%Y-W%W-%w")
+        unique_periods = sorted(time_key.unique())
+
+        # Берём последние 15% периодов для валидации
+        val_period_count = max(1, int(len(unique_periods) * 0.15))
+        train_periods = unique_periods[:-val_period_count]
+        val_periods = unique_periods[-val_period_count:]
+
+        # Фильтруем данные по периодам
+        train_mask = time_key.isin(train_periods)
+        val_mask = time_key.isin(val_periods)
+
+        X_train_actual, y_train_actual = X_train[train_mask], y_train[train_mask]
+        X_val, y_val = X_train[val_mask], y_train[val_mask]
+
+        self.logger.info(f"Train: {len(train_periods)} периодов ({len(X_train_actual)} строк)")
+        self.logger.info(f"Val: {len(val_periods)} периодов ({len(X_val)} строк)")
+
         # Обучение финальной модели
         self.model = lgb.LGBMRegressor(**self.best_params)
         self.model.fit(
-            X_train, y_train,
-            eval_set=[(X_test, y_test)],
+            X_train_actual, y_train_actual,
+            eval_set=[(X_val, y_val)],
             eval_metric="mape",
             callbacks=[
                 lgb.early_stopping(800, verbose=True),
@@ -163,10 +222,7 @@ class LGBMModel(BaseModels):
             metrics_df.to_csv(metrics_path, index=False)
 
             # Сохранение прогнозов для анализа
-            predictions_df = pd.DataFrame({
-                "actual": y_test,
-                "predicted": y_pred
-            })
+            predictions_df = pd.DataFrame({"actual": y_test, "predicted": y_pred})
             predictions_path = REPORTS_PATH / "lgbm_predictions.csv"
             predictions_df.to_csv(predictions_path, index=False)
 
@@ -184,35 +240,7 @@ class LGBMModel(BaseModels):
             self.logger.error(f"Ошибка сохранения модели и метрик: {e}")
             raise
 
-    def plot_feature_importance(self, feature_names: List[str], top_n: int = 20) -> None:
-        """Визуализация важности признаков"""
-        if self.model is None:
-            self.logger.warning("Модель не обучена, невозможно построить важность признаков")
-            return
-
-        importance = pd.DataFrame({
-            "feature": feature_names,
-            "importance": self.model.feature_importances_
-        }).sort_values("importance", ascending=True).tail(top_n)
-
-        plt.figure(figsize=(12, 10))
-        plt.barh(importance["feature"], importance["importance"])
-        plt.title(f"Top {top_n} Feature Importance - LightGBM", fontsize=14, fontweight="bold")
-        plt.xlabel("Importance", fontsize=12)
-        plt.tight_layout()
-
-        # Сохранение графика
-        importance_path = REPORTS_PATH / "lgbm_feature_importance.png"
-        plt.savefig(importance_path, dpi=300, bbox_inches="tight")
-        plt.close()
-
-        # Сохранение данных важности признаков
-        importance_data_path = REPORTS_PATH / "lgbm_feature_importance.csv"
-        importance.to_csv(importance_data_path, index=False)
-
-        self.logger.info(f"График важности признаков сохранен: {importance_path}")
-
-    def run_complete_training(self, data_path: Optional[Path] = None, train_time_ratio: float = 0.8) -> Tuple[Union[str, float, None], Optional[np.ndarray]]:
+    def run_complete_training(self, data_path: Optional[Path] = None, train_time_ratio: float = 0.8) -> Tuple[Dict[str, float], np.ndarray]:
         """Полный цикл обучения модели для использования в пайплайне"""
         try:
             if data_path is None:
@@ -245,11 +273,10 @@ class LGBMModel(BaseModels):
     def load_model(self, model_path: Optional[Path] = None) -> lgb.LGBMRegressor:
         """Загрузка предварительно обученной модели"""
         if model_path is None:
-            model_path = DATA_PATH / "models/lgbm_final_model.pkl"
+            model_path = MODELS_PATH / "lgbm_final_model.pkl"
 
         if not model_path.exists():
             raise FileNotFoundError(f"Файл модели не найден: {model_path}")
-
 
         self.model = joblib.load(model_path)
         self.logger.info(f"Модель загружена: {model_path}")
@@ -262,23 +289,30 @@ class LGBMModel(BaseModels):
 
         return self.model.predict(X)
 
+
 def main():
     """Основная функция для запуска обучения LightGBM модели"""
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
+
+    )
+    logger = logging.getLogger(__name__)
     try:
-        logging.basicConfig(level=logging.INFO)
-        print("Инциализация обучения LightGBM модели...")
+        logger.info("Инициализация обучения LightGBM модели...")
 
         lgbm_model = LGBMModel()
         metrics, predictions = lgbm_model.run_complete_training()
 
-        print(f"\nОбучение LightGBM модели успешно завершено")
-        print(f"Финальные метрики - MAPE: {metrics["MAPE"]:.2f}%, MAE: {metrics["MAE"]:.2f}, RMSE: {metrics["RMSE"]:.2f}")
+        logger.info(f"Финальные метрики - MAPE: {metrics['MAPE']:.2f}%, MAE: {metrics['MAE']:.2f}, RMSE: {metrics['RMSE']:.2f}")
 
         return metrics, predictions
 
     except Exception as e:
-        print(f"Критическая ошибка в обучении LightGBM модели: {e}")
+        logger.error(f"Критическая ошибка в обучении LightGBM модели: {e}")
         return None, None
+
 
 if __name__ == "__main__":
     main()

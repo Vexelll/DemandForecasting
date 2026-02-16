@@ -21,7 +21,7 @@ class AirflowRunner:
 
     def _setup_logger(self):
         """Настройка системы логирования"""
-        logger = logging.getLogger("airflow_runner")
+        logger = logging.getLogger(__name__)
         logger.setLevel(logging.INFO)
 
         if not logger.handlers:
@@ -94,8 +94,8 @@ class AirflowRunner:
 
             if results.returncode != 0 and capture_output:
                 self.logger.warning(f"Команда завершилась с кодом {results.returncode}")
-                if results.stdout:
-                    self.logger.debug(f"Stderr: {results.stdout[:200]}")
+                if results.stderr:
+                    self.logger.error(f"Stderr: {results.stderr[:200]}")
 
             return results
 
@@ -308,8 +308,10 @@ class AirflowRunner:
         # Создаем бэкап старой БД
         backup_commands = [
             f"mkdir -p {backup_dir}",
-            f"cp {self.wsl_airflow_home}/airflow.db {backup_dir}/airflow.db.backup_{timestamp} 2>/dev/null || true",
-            f"ls -la {backup_dir}/*.backup_* 2>/dev/null | tail -n +6 | xargs rm -f 2>/dev/null || true"
+            f"cp {self.wsl_airflow_home}/airflow.db "
+            f"{backup_dir}/airflow.db.backup_{timestamp} 2>/dev/null || true",
+            f"ls -la {backup_dir}/*.backup_* 2>/dev/null | "
+            f"tail -n +6 | xargs rm -f 2>/dev/null || true"
         ]
 
         for cmd in backup_commands:
@@ -361,13 +363,20 @@ class AirflowRunner:
                 f"export AIRFLOW__CORE__LOAD_EXAMPLES=false && "
                 f"export AIRFLOW__CORE__DAGS_FOLDER={self.wsl_airflow_home}/dags && "
                 f"export AIRFLOW__DATABASE__SQL_ALCHEMY_CONN="
-                f"'sqlite:///{self.wsl_airflow_home}/airflow.db?journal_mode=DELETE&locking_mode=EXCLUSIVE' && "
+                f"'sqlite:///{self.wsl_airflow_home}/airflow.db' &&"
                 f".venv/bin/airflow db migrate",
                 timeout=180
             )
 
             if result and result.returncode == 0:
                 self.logger.info("База данных Airflow инициализирована")
+
+                self._run_wsl_command(
+                    f"cd {self.wsl_project_root} && "
+                    f"export AIRFLOW_HOME={self.wsl_airflow_home} && "
+                    f".venv/bin/airflow pools set ml_pool 1 'ML - 1 слот'",
+                    timeout=30
+                )
 
                 # Проверяем создание файла БД
                 check_db = self._run_wsl_command(
@@ -434,7 +443,7 @@ class AirflowRunner:
                 stderr=subprocess.PIPE,
                 text=True,
                 encoding="utf-8"
-            )
+                )
 
             # Даем время на запуск
             time.sleep(5)
@@ -463,7 +472,7 @@ class AirflowRunner:
     def _check_api_server_health(self):
         """Проверка здоровья api-server"""
         try:
-            response = requests.get("http://localhost:8080/health", timeout=10)
+            response = requests.get("http://localhost:8080/health", timeout=5)
             return response.status_code == 200
         except:
             return False
@@ -475,9 +484,9 @@ class AirflowRunner:
             f"export AIRFLOW_HOME={self.wsl_airflow_home} && "
             f"export AIRFLOW__CORE__DAGS_FOLDER={self.wsl_airflow_home}/dags && "
             f"export AIRFLOW__CORE__LOAD_EXAMPLES=false && "
-            f"export AIRFLOW__CORE__EXECUTOR=LocalExecutor && "
+            f"export AIRFLOW__CORE__EXECUTOR=SequentialExecutor && "
             f"export AIRFLOW__DATABASE__SQL_ALCHEMY_CONN="
-            f"'sqlite:///{self.wsl_airflow_home}/airflow.db?journal_mode=DELETE&locking_mode=EXCLUSIVE' && "
+            f"'sqlite:///{self.wsl_airflow_home}/airflow.db' &&"
             f"export AIRFLOW__LOGGING__BASE_LOG_FOLDER={self.wsl_airflow_home}/logs && "
             f".venv/bin/airflow api-server --port 8080 --host 0.0.0.0"
         )
@@ -491,9 +500,9 @@ class AirflowRunner:
             f"export AIRFLOW_HOME={self.wsl_airflow_home} && "
             f"export AIRFLOW__CORE__DAGS_FOLDER={self.wsl_airflow_home}/dags && "
             f"export AIRFLOW__CORE__LOAD_EXAMPLES=false && "
-            f"export AIRFLOW__CORE__EXECUTOR=LocalExecutor && "
+            f"export AIRFLOW__CORE__EXECUTOR=SequentialExecutor && "
             f"export AIRFLOW__DATABASE__SQL_ALCHEMY_CONN="
-            f"'sqlite:///{self.wsl_airflow_home}/airflow.db?journal_mode=DELETE&locking_mode=EXCLUSIVE' && "
+            f"'sqlite:///{self.wsl_airflow_home}/airflow.db' &&"
             f"export AIRFLOW__LOGGING__BASE_LOG_FOLDER={self.wsl_airflow_home}/logs && "
             f".venv/bin/airflow scheduler"
         )
@@ -550,55 +559,23 @@ class AirflowRunner:
             self.logger.error(f"Ошибка проверки DAG: {e}")
             return False
 
-    def trigger_dag(self, dag_id="demand_forecasting_pipeline"):
-        """Запуск DAG"""
-        self.logger.info(f"Запуск DAG {dag_id}")
-
-        try:
-            result = self._run_wsl_command(
-                f"cd {self.wsl_project_root} && "
-                f"export AIRFLOW_HOME={self.wsl_airflow_home} && "
-                f".venv/bin/airflow dags trigger {dag_id}",
-                timeout=60
-            )
-
-            if result and result.returncode == 0:
-                self.logger.info(f"DAG {dag_id} успешно запущен")
-                self.logger.debug(f"Результат: {result.stdout}")
-                return True
-            else:
-                self.logger.error(f"Ошибка запуска DAG {dag_id}")
-                if result:
-                    self.logger.error(f"Stdout: {result.stdout}")
-                    self.logger.error(f"Stderr: {result.stderr}")
-                return False
-
-        except Exception as e:
-            self.logger.error("Ошибка запуска DAG: {e}")
-            return False
-
     def run(self):
         """Основной метод запуска Airflow через WSL"""
         self.logger.info("Запуск локального Airflow через WSL")
-
-        print("Система прогнозирования спроса - Локальный запуск Airflow через WSL")
-        print("=" * 60)
-
-        print(f"\nКонфигурация:")
-        print(f"Project root: {self.project_root}")
-        print(f"Airflow home: {self.airflow_home}")
-        print(f"WSL project root: {self.wsl_project_root}")
+        self.logger.info("=" * 60)
+        self.logger.info("Система прогнозирования спроса - Локальный запуск Airflow через WSL")
+        self.logger.info(f"Project root: {self.project_root}")
+        self.logger.info(f"Airflow home: {self.airflow_home}")
+        self.logger.info(f"WSL project root: {self.wsl_project_root}")
 
         # Проверка WSL
         if not self.check_wsl_installation():
-            self.logger.error("Ошибка: WSL не установлен")
-            print("Установите WSL2 для продолжения")
+            self.logger.error("Ошибка: WSL не установлен. Установите WSL2 для продолжения")
             return False
 
         # Проверка Airflow
         if not self.check_airflow_installation():
-            self.logger.error("Ошибка: Airflow не установлен в WSL")
-            print("Запустите сначала setup_wsl.py для установки зависимостей")
+            self.logger.error("Ошибка: Airflow не установлен в WSL. Запустите сначала setup_wsl.py для установки зависимостей")
             return False
 
         # Инициализация БД
@@ -623,7 +600,7 @@ class AirflowRunner:
             return False
 
         # Даем время для загрузки DAG
-        print("\nОжидание загрузки DAG файлов...")
+        self.logger.info("Ожидание загрузки DAG файлов...")
         time.sleep(15)
 
         # Проверяем загрузку DAG
@@ -634,18 +611,18 @@ class AirflowRunner:
             time.sleep(10)
             self.check_dags_loaded()
 
-        print("AIRFLOW УСПЕШНО ЗАПУЩЕН:")
-        print("API Server: http://localhost:8080")
-        print("Для остановки нажмите Ctrl+C")
+        self.logger.info("AIRFLOW УСПЕШНО ЗАПУЩЕН")
+        self.logger.info("API Server: http://localhost:8080")
+        self.logger.info("Для остановки нажмите Ctrl+C")
 
         try:
             api_server_process.wait()
             scheduler_process.wait()
         except KeyboardInterrupt:
-            print("\nОстановка Airflow")
+            self.logger.info("Остановка Airflow...")
             api_server_process.terminate()
             scheduler_process.terminate()
-            print("Airflow остановлен")
+            self.logger.info("Airflow остановлен")
 
         return True
 
@@ -657,16 +634,16 @@ def main():
         success = runner.run()
 
         if success:
-            print("Airflow завершил работу")
+            runner.logger.info("Airflow завершил работу")
         else:
-            print("Ошибка запуска Airflow")
+            runner.logger.error("Ошибка запуска Airflow")
             sys.exit(1)
 
     except KeyboardInterrupt:
-        print("\nЗапуск прерван пользователем")
+        logging.getLogger("airflow_runner").info("Запуск прерван пользователем")
         sys.exit(0)
     except Exception as e:
-        print(f"Критическая ошибка: {e}")
+        logging.getLogger("airflow_runner").error(f"Критическая ошибка: {e}")
         traceback.print_exc()
         sys.exit(1)
 

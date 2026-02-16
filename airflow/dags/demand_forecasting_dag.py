@@ -20,10 +20,10 @@ from monitoring.dag_monitor import DAGMonitor
 
 class DemandForecastingPipeline:
     def __init__(self):
-        self.logger = logging.getLogger("demand_forecasting_pipeline")
-        self.quality_checker = DataQualityChecker()
-        self.operations = PipelineOperations()
-        self.monitor = DAGMonitor()
+        self.logger = logging.getLogger(__name__)
+        self._quality_checker = None
+        self._operations = None
+        self._monitor = None
         self.default_args = {
             "owner": "data_engineering",
             "depends_on_past": False,
@@ -36,7 +36,28 @@ class DemandForecastingPipeline:
         }
         self.cleaned_data = None
 
-    def check_new_data(self):
+    @property
+    def quality_checker(self):
+        """Ленивая инициализация DataQualityChecker"""
+        if self._quality_checker is None:
+            self._quality_checker = DataQualityChecker()
+        return self._quality_checker
+
+    @property
+    def operations(self):
+        """Ленивая инициализация PipelineOperations"""
+        if self._operations is None:
+            self._operations = PipelineOperations()
+        return self._operations
+
+    @property
+    def monitor(self):
+        """Ленивая инициализация DAGMonitor"""
+        if self._monitor is None:
+            self._monitor = DAGMonitor()
+        return self._monitor
+
+    def check_new_data(self) -> str:
         """Проверка наличия новых данных"""
         self.logger.info("Проверка новых данных...")
 
@@ -48,10 +69,10 @@ class DemandForecastingPipeline:
                 self.logger.info("Нет новых данных")
                 return "skip_processing"
         except Exception as e:
-            self.logger.error(f"Ошибка проверки данны: {e}")
+            self.logger.error(f"Ошибка проверки данных: {e}")
             return "preprocess_data"
 
-    def decide_retraining_path(self, **context):
+    def decide_retraining_path(self, **context) -> str:
         """Принятие решения об переобучении модели"""
         self.logger.info("Проверка необходимости переобучения...")
 
@@ -66,8 +87,8 @@ class DemandForecastingPipeline:
             self.logger.error(f"Ошибка проверки модели: {e}")
             return "retrain_model"
 
-    def preprocess_data(self):
-        """Обработка данных"""
+    def preprocess_data(self) -> str:
+        """Предобработка входных данных"""
         self.logger.info("Запуск предобработки данных...")
 
         try:
@@ -79,8 +100,8 @@ class DemandForecastingPipeline:
             self.logger.error(f"Ошибка предобработки: {e}")
             return "failure"
 
-    def update_feature_store(self):
-        """Создание фичи"""
+    def update_feature_store(self) -> str:
+        """Создание признаков (feature engineering)"""
         self.logger.info("Создание признаков...")
 
         try:
@@ -92,7 +113,7 @@ class DemandForecastingPipeline:
             self.logger.error(f"Ошибка создания признаков: {e}")
             return "failure"
 
-    def update_sales_history(self):
+    def update_sales_history(self) -> str:
         """Обновление истории продаж"""
         self.logger.info("Обновление истории продаж...")
 
@@ -110,8 +131,8 @@ class DemandForecastingPipeline:
             self.logger.error(f"Ошибка при вызове update_sales_history: {e}")
             return "failure"
 
-    def retrain_model(self):
-        """Обучение модели"""
+    def retrain_model(self) -> str:
+        """Обучение модели LightGBM"""
         self.logger.info("Обучение модели...")
 
         try:
@@ -123,14 +144,14 @@ class DemandForecastingPipeline:
             self.logger.error(f"Ошибка обучения модели: {e}")
             return "failure"
 
-    def full_retrain_model(self):
-        """Полное переобучение модели"""
+    def full_retrain_model(self) -> str:
+        """Полное переобучение модели (еженедельное)"""
         self.logger.info("Полное переобучение модели...")
         return self.retrain_model()
 
-    def generate_predictions(self):
-        """Генерация прогнозов"""
-        self.logger.info("Герерация прогнозов...")
+    def generate_predictions(self) -> str:
+        """Генерация прогнозов через ETL-пайплайн"""
+        self.logger.info("Генерация прогнозов...")
 
         try:
             success = self.operations.make_predictions()
@@ -141,8 +162,8 @@ class DemandForecastingPipeline:
             self.logger.error(f"Ошибка генерации прогнозов: {e}")
             return "failure"
 
-    def validate_results(self):
-        """Проверка результатов"""
+    def validate_results(self) -> str:
+        """Валидация результатов прогнозирования"""
         self.logger.info("Валидация результатов...")
 
         try:
@@ -157,20 +178,22 @@ class DemandForecastingPipeline:
             self.logger.error(f"Ошибка валидации: {e}")
             return "failure"
 
-    def on_failure_callback(self, context):
-        """Обработка ошибок"""
+    def on_failure_callback(self, context: dict) -> None:
+        """callback обработки ошибок DAG"""
         error = context.get("exception")
         task_id = context.get("task_instance").task_id if context.get("task_instance") else "unknown"
 
         self.logger.error(f"Ошибка в задаче {task_id}: {error}")
 
-    def create_dag(self):
-        """Создание основного DAG"""
+    def create_dag(self) -> DAG:
+        """Создание основного DAG ежедневного прогнозирования"""
         with DAG(
             "demand_forecasting_pipeline",
             default_args=self.default_args,
             description="Автоматизированный пайплайн прогнозирования спроса",
             schedule="0 2 * * *", # Ежедневно в 2:00
+            max_active_runs=1,
+            max_active_tasks=1,
             catchup=False,
             tags=["retail", "forecasting"],
             on_failure_callback=self.on_failure_callback
@@ -209,7 +232,9 @@ class DemandForecastingPipeline:
 
             retrain = PythonOperator(
                 task_id="retrain_model",
-                python_callable=self.retrain_model
+                python_callable=self.retrain_model,
+                pool="ml_pool",
+                execution_timeout=timedelta(hours=3)
             )
 
             # Пропуски
@@ -257,8 +282,8 @@ class DemandForecastingPipeline:
 
             return dag
 
-    def create_retraining_dag(self):
-        """Создание DAG для переобучения"""
+    def create_retraining_dag(self) -> DAG:
+        """Создание DAG еженедельного переобучения"""
         with DAG(
             "weekly_model_retraining",
             default_args=self.default_args,
@@ -268,12 +293,16 @@ class DemandForecastingPipeline:
             tags=["retraining"]
         ) as dag:
 
+            start = EmptyOperator(task_id="start")
+
             full_retrain = PythonOperator(
                 task_id="full_model_retraining",
                 python_callable=self.full_retrain_model
             )
 
-            full_retrain
+            end = EmptyOperator(task_id="end")
+
+            start >> full_retrain >> end
 
             return dag
 

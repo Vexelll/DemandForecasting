@@ -7,7 +7,7 @@ def create_layout(data):
     """Создание основного layout дашборда"""
     return html.Div([
         # Заголовок
-        create_header(),
+        _create_header(),
 
         # Индикатор загрузки
         dcc.Loading(
@@ -59,12 +59,12 @@ def create_layout(data):
         html.Div(id="last-update", style={"display": "none"}),
 
         # Футер
-        create_footer()
+        _create_footer()
     ], className="dashboard-container")
 
 
-def create_header():
-    """Создание заголовка"""
+def _create_header():
+    """Создание заголовка дашборда"""
     return html.Div([
         html.H1("Demand Forecasting Dashboard", className="main-title"),
         html.P("Система прогнозирования спроса для розничной сети Rossmann",
@@ -73,8 +73,8 @@ def create_header():
     ], className="header")
 
 
-def create_footer():
-    """Создание футера"""
+def _create_footer():
+    """Создание футера дашборда"""
     return html.Div([
         html.Hr(className="footer-divider"),
         html.P([

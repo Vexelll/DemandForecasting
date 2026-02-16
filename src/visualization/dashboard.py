@@ -1,13 +1,11 @@
 import dash
 from dash import Dash, Input, Output, dcc
 import pandas as pd
-import numpy as np
+import logging
 from datetime import datetime, timedelta
-import os
-from config.settings import DATA_PATH
-from visualization.components.layout import create_layout
-from visualization.components.metrics import calculate_metrics, create_metric_cards
-from visualization.components.charts import (
+from components.layout import create_layout
+from components.metrics import calculate_metrics, create_metric_cards
+from components.charts import (
     create_forecast_chart,
     create_error_distribution,
     create_store_comparison,
@@ -15,84 +13,42 @@ from visualization.components.charts import (
     create_empty_chart,
     create_data_table
 )
+from src.database.dashboard_data_provider import DashboardDataProvider
 
 class ForecastingDashboard:
-    def __init__(self):
-        self.app = Dash(__name__)
-        self.data = self.load_data()
-        self._last_update_time = datetime.now()
-        self.setup_layout()
-        self.setup_callbacks()
+    # Минимальный интервал между обновлениями данных (секунды)
+    REFRESH_COOLDOWN_SECONDS = 5
 
-    def get_last_update_time(self):
-        """Получение времени последнего обновления"""
+    def __init__(self):
+        self.logger = logging.getLogger(__name__)
+        self.app = Dash(__name__)
+        self.data_provider = DashboardDataProvider()
+        self.data = self.data_provider.load_predictions()
+        self._last_update_time = datetime.now()
+        self._setup_layout()
+        self._setup_callbacks()
+
+        # Логирование источника данных
+        source_info = self.data_provider.get_data_source_info()
+        self.logger.info(f"Дашборд инициализирован. Источник данных: {source_info["source"]}")
+
+    def get_last_update_time(self) -> datetime:
+        """Получение времени последнего обновления данных"""
         return self._last_update_time
 
-    def set_last_update_time(self, timestamp = None):
-        """Сохранение времени обновления"""
+    def set_last_update_time(self, timestamp: datetime = None) -> None:
+        """Сохранение времени обновления данных"""
         if timestamp is None:
             timestamp = datetime.now()
         self._last_update_time = timestamp
 
-    def load_data(self):
-        """Загрузка данных для дашборда"""
-        data_path = DATA_PATH / "outputs/predictions.csv"
-
-        # Проверка существования файла и не пустой ли он
-        if os.path.exists(data_path) and data_path.stat().st_size > 0:
-            try:
-                data = pd.read_csv(data_path, parse_dates=["Date"])
-
-                if len(data) == 0:
-                    print("Файл с данными пуст. Используются демо-данные.")
-
-                # Проверка необходимых колонок
-                required_columns = ["Store", "Date", "PredictedSales", "ActualSales"]
-                missing_columns = [col for col in required_columns if col not in data.columns]
-
-                if missing_columns:
-                    print(f"Внимание: отсутствуют колонки {missing_columns}. Используются демо-данные.")
-                    return self.create_demo_data()
-
-                print(f"Данные успешно загружены: {len(data)} записей")
-                return data
-
-            except pd.errors.EmptyDataError:
-                print("Ошибка: файл данных пуст. Используются демо-данные.")
-                return self.create_demo_data()
-            except Exception as e:
-                print(f"Ошибка загрузки файла: {e}. Используются демо-данные.")
-                return self.create_demo_data()
-        else:
-            print(f"Файл не найден или пуст: {data_path}. Используются демо-данные.")
-            return self.create_demo_data()
-
-    def create_demo_data(self):
-        """Создание демо-данных для тестирования"""
-        dates = pd.date_range(start="2024-01-01", end="2024-03-31", freq="D")
-
-        # Более реалистичные демо-данные
-        base_sales = 10000
-        seasonal_effect = 2000 * np.sin(2 * np.pi * np.arange(len(dates)) / 30)
-        trend = 50 * np.arange(len(dates))
-        noise = np.random.normal(0, 500, len(dates))
-
-        actual_sales = base_sales + seasonal_effect + trend + noise
-        predicted_sales = actual_sales + np.random.normal(0, 800, len(dates))
-
-        return pd.DataFrame({
-            "Store": [1] * len(dates),
-            "Date": dates,
-            "PredictedSales": np.maximum(predicted_sales, 0),
-            "ActualSales": np.maximum(actual_sales, 0)
-        })
-
-    def setup_layout(self):
+    def _setup_layout(self) -> None:
         """Настройка layout дашборда"""
         self.app.layout = create_layout(self.data)
+        self.logger.debug("Layout дашборда настроен")
 
-    def setup_callbacks(self):
-        """Настройка callback функций"""
+    def _setup_callbacks(self) -> None:
+        """Настройка callback функций для интерактивного обновления"""
 
         @self.app.callback(
             [Output("mape-metric", "children"),
@@ -112,7 +68,7 @@ class ForecastingDashboard:
              Input("refresh-btn", "n_clicks")]
         )
         def update_dashboard(selected_store, start_date, end_date, period_preset, n_clicks):
-            """Обновление всех компонентов дашборда"""
+            """Обновление всех компонентов дашборда при изменении фильтров"""
 
             # Обработка period_preset для автоматической установки дат
             if period_preset and period_preset != "custom":
@@ -135,16 +91,17 @@ class ForecastingDashboard:
                 trigger_id = ctx.triggered[0]["prop_id"].split(".")[0]
 
                 if trigger_id == "refresh-btn":
-                    # Проверяем, не слишком ли часто обновляем
                     current_time = datetime.now()
                     last_update = self.get_last_update_time()
+                    elapsed = (current_time - last_update).total_seconds()
 
-                    if (current_time - last_update).total_seconds() < 5: # Не чаще чем раз в 5 секунд
-                        print("Предупреждение: слишком частая перезагрузка данных")
+                    # Не чаще чем раз в REFRESH_COOLDOWN_SECONDS
+                    if elapsed < self.REFRESH_COOLDOWN_SECONDS:
+                        self.logger.debug(f"Слишком частая перезагрузка данных (прошло {elapsed:.1f}с < {self.REFRESH_COOLDOWN_SECONDS}с)")
                     else:
-                        self.data = self.load_data()
+                        self.data = self.data_provider.load_predictions()
                         self.set_last_update_time(current_time)
-                        print(f"Данные обновлены. Записей: {len(self.data)}")
+                        self.logger.info(f"Данные обновлены. Записей: {len(self.data)}")
 
             # Фильтрация данных
             filtered_data = self.data.copy()
@@ -161,7 +118,6 @@ class ForecastingDashboard:
 
             # Проверка наличия данных после фильтрации
             if start_date is None or end_date is None:
-                # Возвращаем пустые графики
                 empty_fig = create_empty_chart("Выберите диапазон дат")
                 last_update = f"Последнее обновление: {datetime.now().strftime("%H:%M:%S")}"
                 return ["-", "-", "-", "-", empty_fig, empty_fig, empty_fig, empty_fig, "", last_update]
@@ -177,27 +133,39 @@ class ForecastingDashboard:
                                                 pd.to_datetime(start_date),
                                                 pd.to_datetime(end_date))
             feature_fig = create_feature_importance_chart()
-
             table_fig = create_data_table(filtered_data)
 
-            last_update = f"Последнее обновление: {datetime.now().strftime("%H:%M:%S")}"
+            last_update_str = self._format_last_update()
 
             return [
                 metric_cards[0], metric_cards[1], metric_cards[2], metric_cards[3],
                 forecast_fig, error_fig, store_fig, feature_fig, dcc.Graph(figure=table_fig, config={"displayModeBar": True}),
-                last_update
+                last_update_str
             ]
 
-    def run(self, debug=True, port=8050):
+        self.logger.debug("Callbacks дашборда настроены")
+
+    def _format_last_update(self) -> str:
+        """Формирование строки последнего обновления с указанием источника"""
+        source = self.data_provider.data_source
+        time_str = datetime.now().strftime("%H:%M:%S")
+        return f"Последнее обновление: {time_str} (источник: {source})"
+
+    def run(self, debug: bool = True, port: int = 8050) -> None:
         """Запуск дашборда"""
-        print(f"Дашборд доступен по адресу: http://localhost:{port}")
-        print("Используемые данные:")
-        print(f"- Магазинов: {self.data["Store"].nunique()}")
-        print(f"- Диапазон дат: {self.data["Date"].min()} до {self.data["Date"].max()}")
-        print(f"- Записей: {len(self.data)}")
+        source_info = self.data_provider.get_data_source_info()
+        self.logger.info(f"Дашборд доступен по адресу http://localhost:{port}")
+        self.logger.info(f"Используемые данные: магазинов={self.data['Store'].nunique()}, диапазон={self.data['Date'].min()} — {self.data['Date'].max()}, записей={len(self.data)}")
         self.app.run(debug=debug, port=port)
 
 
 if __name__ == "__main__":
+    # Настройка логирования
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
+    )
+
     dashboard = ForecastingDashboard()
     dashboard.run()

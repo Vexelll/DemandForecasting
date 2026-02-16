@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 
 
 def create_controls(data):
-    """Создание элементов управления"""
+    """Создание панели элементов управления дашбордом"""
     if len(data) == 0:
         store_options = [{"label": "Нет данных", "value": 0}]
         min_date = max_date = datetime.now().date()
@@ -32,7 +32,7 @@ def create_controls(data):
                 dcc.Dropdown(
                     id="store-selector",
                     options=store_options,
-                    value=0 if store_options else 0,
+                    value=0,
                     clearable=False,
                     className="store-dropdown",
                     placeholder="Выберите магазин..."
@@ -60,7 +60,7 @@ def create_controls(data):
                     end_date=max_date,
                     min_date_allowed=min_date,
                     max_date_allowed=max_date,
-                    display_format="YYYY-MM-DD",
+                    display_format="DD.MM.YYYY",
                     className="date-picker",
                     start_date_placeholder_text="Начальная дата",
                     end_date_placeholder_text="Конечная дата"
@@ -76,7 +76,7 @@ def create_controls(data):
                             className="refresh-button"),
                 html.Small("Последнее обновление: -",
                            id="last-update-text",
-                           style={"display": "block", "marginTop": "5px", "color": "#7f8c8d"})
+                           style={"display": "block", "marginTop": "5px", "color": "#7f8c8d", "fontSize": "12px"})
             ], className="control-group")
 
         ], className="controls-container")

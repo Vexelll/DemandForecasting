@@ -1,57 +1,73 @@
+import logging
+from typing import Dict, Any, List
+
 from dash import html
 import numpy as np
 
+logger = logging.getLogger(__name__)
 
-def calculate_metrics(data):
+def calculate_metrics(data) -> Dict[str, Any]:
     """Расчет метрик качества прогнозирования с проверкой данных"""
-    if len(data) == 0:
-        return {
-            "mape": 0, "mae": 0, "rmse": 0,
-            "total_sales": 0, "bias": 0, "std_error": 0,
-            "data_points": 0
-        }
-
-    # Проверка наличия колонок
-    if "ActualSales" not in data.columns or "PredictedSales" not in data.columns:
-        return {
-            "mape": 0, "mae": 0, "rmse": 0,
-            "total_sales": 0, "bias": 0, "std_error": 0,
-            "data_points": 0
-        }
-
-    actual = data["ActualSales"]
-    predicted = data["PredictedSales"]
-
-    errors = actual - predicted
-
-    with np.errstate(divide="ignore", invalid="ignore"):
-        ape = np.where(
-            actual > 0,
-            np.abs(errors) / actual * 100,
-            0 # Если продажи 0, то ошибка 0%
-        )
-
-    ape = ape[np.isfinite(ape)]
-
-    metrics = {
-        "mape": np.mean(ape) if len(ape) > 0 else 0,
-        "mae": np.mean(np.abs(errors)),
-        "rmse": np.sqrt(np.mean(errors ** 2)),
-        "total_sales": actual.sum(),
-        "bias": errors.mean(),
-        "std_error": errors.std(),
-        "data_points": len(data)
+    # Базовые метрики по умолчанию
+    default_metrics = {
+        "mape": 0.0, "mae": 0.0, "rmse": 0.0,
+        "total_sales": 0.0, "bias": 0.0, "std_error": 0.0,
+        "data_points": 0.0
     }
 
-    # Округление для читаемости
-    for key in ["mape", "mae", "rmse", "total_sales", "bias", "std_error"]:
-        metrics[key] = round(metrics[key], 2)
+    # Проверка наличия данных
+    if data is None or len(data) == 0:
+        logger.debug("Расчет метрик: данные пусты, возвращены значения по умолчанию")
+        return default_metrics
+
+    # Проверка наличия колонок
+    required_columns = ["ActualSales", "PredictedSales"]
+    if not all(col in data.columns for col in required_columns):
+        missing = [col for col in required_columns if col not in data.columns]
+        logger.warning(f"Расчет метрик: отсутствуют колонки: {missing}")
+        return default_metrics
+
+    # Извлечение данных и удаление NaN
+    valid_mask = data["ActualSales"].notna() & data["PredictedSales"].notna()
+    valid_data = data[valid_mask]
+
+    if len(valid_data) == 0:
+        logger.debug("Расчет метрик: нет валидных данных после фильтрации NaN")
+        return default_metrics
+
+    actual = valid_data["ActualSales"].values
+    predicted = valid_data["PredictedSales"].values
+
+    # Расчет ошибки
+    errors = actual - predicted
+
+    # Безопасный расчет MAPE (иключаем нулевые продажи)
+    with np.errstate(divide="ignore", invalid ="ignore"):
+        non_zero_mask = actual > 0
+        if non_zero_mask.sum() > 0:
+            ape = np.abs(errors[non_zero_mask]) / actual[non_zero_mask] * 100
+            mape = np.mean(ape[np.isfinite(ape)])
+        else:
+            mape = 0.0
+
+    # Расчет метрик
+    metrics = {
+        "mape": round(mape, 2) if np.isfinite(mape) else 0.0,
+        "mae": round(np.mean(np.abs(errors)), 2),
+        "rmse": round(np.sqrt(np.mean(errors ** 2)), 2),
+        "total_sales": round(actual.sum(), 2),
+        "bias": round(errors.mean(), 2),
+        "std_error": round(errors.std(), 2) if len(errors) > 1 else 0.0,
+        "data_points": len(valid_data)
+    }
+
+    logger.debug(f"Метрики рассчитаны: MAPE={metrics["mape"]}%, MAE={metrics["mae"]}, RMSE={metrics["rmse"]}, точек данных={metrics["data_points"]}")
 
     return metrics
 
 
-def create_metric_cards(metrics):
-    """Создание карточек с метриками с улучшенным форматированием"""
+def create_metric_cards(metrics: Dict[str, Any]) -> List[html.Div]:
+    """Создание карточек с метриками с цветовой индикацией качества"""
 
     # Определение цвета для MAPE в зависимости от качества
     if metrics["mape"] < 10:
@@ -66,57 +82,63 @@ def create_metric_cards(metrics):
     rmse_color = "#9b59b6"
     sales_color = "#2ecc71"
 
-    mape_card = create_metric_card(
+    mape_card = _create_metric_card(
         "Точность прогноза (MAPE)",
         f"{metrics["mape"]:.2f}%",
         mape_color,
         f"На основе {metrics["data_points"]} точек данных"
     )
 
-    mae_card = create_metric_card(
+    mae_card = _create_metric_card(
         "Средняя абсолютная ошибка",
         f"{metrics["mae"]:,.0f} €",
         mae_color,
-        f"Смещение: {metrics["bias"]:,.0f} €"
+        f"Смещение: {metrics["bias"]:+,.0f} €"
     )
 
-    rmse_card = create_metric_card(
+    rmse_card = _create_metric_card(
         "Среднеквадратичная ошибка",
         f"{metrics["rmse"]:,.0f} €",
         rmse_color,
-        f"Std ошибки: {metrics["std_error"]:,.0f} €"
+        f"Стд. откл. ошибки: {metrics["std_error"]:,.0f} €"
     )
 
-    sales_card = create_metric_card(
+    avg_daily = metrics["total_sales"] / max(metrics["data_points"], 1)
+    sales_card = _create_metric_card(
         "Общий объем продаж",
         f"{metrics["total_sales"]:,.0f} €",
         sales_color,
-        f"Среднедневные: {metrics["total_sales"] / max(metrics["data_points"], 1):,.0f} €"
+        f"Среднедневные: {avg_daily:,.0f} €"
     )
 
     return [mape_card, mae_card, rmse_card, sales_card]
 
-def format_metric_value(value, is_currency=True, is_percentage=False):
+def _format_metric_value(value: str) -> str:
     """Форматирование значения метрики для отображения"""
     try:
-        if is_percentage:
-            return f"{float(value):.1f}%"
-        elif is_currency:
-            # Форматирование валюты: 1234567.89 -> 1 234 567.89 €
-            return f"{float(value):,.0f}".replace(",", " ")
+        # Извлечение числовой части
+        clean = value.replace("€", "").replace("%", "").replace(",", "").strip()
+        numeric = float(clean)
+
+        if "%" in value:
+            return f"{numeric:.1f}%"
+        elif "€" in value:
+            return f"{numeric:,.0f} €".replace(",", " ")
         else:
-            # Числовое значение с разделителями тысяч
-            return f"{float(value):,.0f}".replace(",", " ")
+            return f"{numeric:,.0f}".replace(",", " ")
     except (ValueError, TypeError):
         return str(value)
 
 
-def create_metric_card(title, value, color, description=None):
+def _create_metric_card(title: str, value: str, color: str, description: str =None) -> html.Div:
     """Создание отдельной карточки метрики с форматированием"""
-    formatted_value = format_metric_value(value)
+    formatted_value = _format_metric_value(value)
 
-    return html.Div([
+    children = [
         html.Div(title, className="metric-title"),
         html.Div(formatted_value, className="metric-value", style={"color": color}),
-        html.Div(description, className="metric-description") if description else None
-    ], className="metric-card")
+    ]
+    if description:
+        children.append(html.Div(description, className="metric-description"))
+
+    return html.Div(children, className="metric-card")

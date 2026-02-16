@@ -1,3 +1,4 @@
+import logging
 import pandas as pd
 import json
 from sklearn.linear_model import LinearRegression
@@ -8,10 +9,10 @@ from typing import Dict, Any, Optional, Tuple
 from src.models.base_model import BaseModels
 from config.settings import DATA_PATH, all_stores_time_split, REPORTS_PATH
 
-
 class BaselineModels(BaseModels):
     def __init__(self) -> None:
         super().__init__()
+        self.logger = logging.getLogger(__name__)
         self.models = {
             "LinearRegression": LinearRegression(),
             "RandomForest": RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1),
@@ -32,7 +33,7 @@ class BaselineModels(BaseModels):
             raise ValueError(f"Несоответствие размеров X_test ({len(X_test)}) и y_test ({len(y_test)})")
 
         if len(X_train) < 100:
-            print("Предупреждение: малый объем обучающих данных может повлиять на качество моделей")
+            self.logger.warning("Малый объем обучающих данных может повлиять на качество моделей")
 
     def _load_dataset(self, data_path: Path) -> pd.DataFrame:
         """Загрузка и валидация набора данных"""
@@ -58,16 +59,16 @@ class BaselineModels(BaseModels):
         # Валидация входных данных
         self._validate_input_data(X_train, X_test, y_train, y_test)
 
-        print("Начало обучения базовых моделей")
-        print(f"Обучающая выборка: {X_train.shape[0]} samples, {X_train.shape[1]} features")
-        print(f"Тестовая выборка: {X_test.shape[0]} samples")
+        self.logger.info("Начало обучения базовых моделей")
+        self.logger.info(f"Обучающая выборка: {X_train.shape[0]} samples, {X_train.shape[1]} features")
+        self.logger.info(f"Тестовая выборка: {X_test.shape[0]} samples")
 
         results = {}
         training_times = {}
 
         for name, model in self.models.items():
             try:
-                print(f"\n--- Обучение модели: {name} ---")
+                self.logger.info(f"Обучение модели: {name}")
                 start_time = pd.Timestamp.now()
 
                 # Обучение модели
@@ -89,16 +90,15 @@ class BaselineModels(BaseModels):
                 self.plot_predictions(y_test, y_pred, f"{name}_predictions")
                 self.plot_residuals(y_test, y_pred, name)
 
-                print(f"Модель {name} обучена за {training_time:.2f} секунд")
-                print(f"Метрики - MAE: {metrics["MAE"]:.2f}, RMSE: {metrics["RMSE"]:.2f}, MAPE: {metrics["MAPE"]:.2f}%")
+                self.logger.info(f"Модель {name} обучена за {training_time:.2f} секунд. MAE: {metrics["MAE"]:.2f}, RMSE: {metrics["RMSE"]:.2f}, MAPE: {metrics["MAPE"]:.2f}%")
 
             except Exception as e:
-                print(f"Критическая ошибка обучения модели {name}: {e}")
+                self.logger.error(f"Критическая ошибка обучения модели {name}: {e}")
                 results[name] = {"error": str(e), "training_time_seconds": 0}
 
         # Сохранение результатов
         self._save_results(results, training_times)
-        self._print_summary_report(results, training_times)
+        self._log_summary_report(results, training_times)
 
         return results
 
@@ -130,17 +130,17 @@ class BaselineModels(BaseModels):
             with open(json_path, "w", encoding="utf-8") as f:
                 json.dump(json_results, f, indent=2, ensure_ascii=False)
 
-            print(f"Результаты сохранены:")
-            print(f"- Детальные метрики: {results_path}")
-            print(f"- Сводный отчет: {json_path}")
+            self.logger.info(f"Результаты сохранены: -> {results_path}, сводка -> {json_path}")
 
         except Exception as e:
-            print(f"Ошибка сохранения результатов: {e}")
+            self.logger.error(f"Ошибка сохранения результатов: {e}")
             raise
 
-    def _print_summary_report(self, results: Dict[str, Dict[str, Any]], training_times: Dict[str, float]) -> None:
-        """Вывод сводного отчета по всем моделям"""
-        print("СВОДНЫЙ ОТЧЕТ ПО БАЗОВЫМ МОДЕЛЯМ")
+    def _log_summary_report(self, results: Dict[str, Dict[str, Any]], training_times: Dict[str, float]) -> None:
+        """Вывод сводного отчета по всем моделям в лог"""
+        self.logger.info("=" * 60)
+        self.logger.info("СВОДНЫЙ ОТЧЕТ ПО БАЗОВЫМ МОДЕЛЯМ")
+        self.logger.info("=" * 60)
 
         valid_results = {k: v for k, v in results.items() if "error" not in v}
 
@@ -148,17 +148,28 @@ class BaselineModels(BaseModels):
             best_model = min(valid_results.items(), key=lambda x: x[1]["MAPE"])
             worst_model = max(valid_results.items(), key=lambda x: x[1]["MAPE"])
 
-            print(f"Лучшая модель: {best_model[0]} (MAPE: {best_model[1]["MAPE"]:.2f}%)")
-            print(f"Худшая модель: {worst_model[0]} (MAPE: {worst_model[1]["MAPE"]:.2f}%)")
-            print(f"Общее время обучения: {sum(training_times.values()):.2f} секунд")
+            self.logger.info(f"Лучшая модель: {best_model[0]} (MAPE: {best_model[1]["MAPE"]:.2f}%)")
+            self.logger.info(f"Худшая модель: {worst_model[0]} (MAPE: {worst_model[1]["MAPE"]:.2f}%)")
+            self.logger.info(f"Общее время обучения: {sum(training_times.values()):.2f} секунд")
 
             # Детализация по всем моделям
-            print("\nДетальные результаты")
+            self.logger.info("Детальные результаты")
             for model_name, metrics in valid_results.items():
-                print(f"- {model_name}: MAPE:{metrics["MAPE"]:.2f}%, "
-                      f"MAE={metrics["MAE"]:.2f}, RMSE={metrics["RMSE"]:.2f}, "
-                      f"Время={metrics["training_time_seconds"]:.2f}c")
-        print("Нет успешно обученных моделей для анализа")
+               self.logger.info(
+                   f"{model_name}: MAPE={metrics["MAPE"]:.2f}%, "
+                   f"MAE={metrics["MAE"]:.2f}, RMSE={metrics["RMSE"]:.2f}, "
+                   f"R²={metrics.get("R2", 0):.4f}, "
+                   f"время={metrics.get("training_time_seconds", 0):.2f} сек"
+               )
+        else:
+            self.logger.warning("Нет успешно обученных моделей для анализа")
+
+        # Вывод информации о неудачных моделях
+        failed_models = {k: v for k, v in results.items() if "error" in v}
+        if failed_models:
+            self.logger.warning("Модели с ошибками:")
+            for model_name, error_info in failed_models.items():
+                self.logger.warning(f"{model_name}: {error_info.get("error", "Неизвестная ошибка")}")
 
     def run_complete_analysis(self, data_path: Optional[Path] = None, train_time_ratio: float = 0.8) -> Dict[str, Dict[str, Any]]:
         """Полный цикл анализа базовых моделей"""
@@ -166,19 +177,19 @@ class BaselineModels(BaseModels):
             if data_path is None:
                 data_path = DATA_PATH / "processed/final_dataset.csv"
 
-            print("Загрузка данных для анализа базовых моделей...")
+            self.logger.info("Загрузка данных для анализа базовых моделей...")
             final_data = self._load_dataset(data_path)
 
-            print("Разделение данных на обучающую и тестовую выборки...")
+            self.logger.info("Разделение данных на обучающую и тестовую выборки...")
             X_train, X_test, y_train, y_test = all_stores_time_split(final_data, train_time_ratio)
 
-            print("Обучение и оценка базовых моделей...")
+            self.logger.info("Обучение и оценка базовых моделей...")
             self.results = self.train_and_evaluate(X_train, X_test, y_train, y_test)
 
             return self.results
 
         except Exception as e:
-            print(f"Ошибка выполнения анализа базовых моделей: {e}")
+            self.logger.error(f"Ошибка выполнения анализа базовых моделей: {e}")
             raise
 
     def get_best_model(self) -> Tuple[Any, str]:
@@ -202,15 +213,22 @@ class BaselineModels(BaseModels):
 
 def main():
     """Основная функция для запуска анализа базовых моделей"""
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
+    )
+    logger = logging.getLogger(__name__)
+
     try:
-        print("Инициализация анализа базовых моделей...")
+        logger.info("Инициализация анализа базовых моделей...")
         baseline_analyzer = BaselineModels()
         results = baseline_analyzer.run_complete_analysis()
 
         if results:
             best_model, best_model_name = baseline_analyzer.get_best_model()
-            print(f"\nАнализ базовых моделей успешно завершен")
-            print(f"Рекомендуемая модель для дальнейшего использования: {best_model_name}")
+            logger.info(f"Анализ базовых моделей успешно завершен")
+            logger.info(f"Рекомендуемая модель для дальнейшего использования: {best_model_name}")
 
             # Создание сравнительной визуализации
             baseline_analyzer.plot_metrics_comparison(results, "Сравнение базовых моделей")
@@ -218,7 +236,7 @@ def main():
         return results
 
     except Exception as e:
-        print(f"Критическая ошибка в анализе базовых моделей: {e}")
+        logger.error(f"Критическая ошибка в анализе базовых моделей: {e}")
         return None
 
 if __name__ == "__main__":
