@@ -19,9 +19,37 @@ class LGBMModel(BaseModels):
         super().__init__()
         self.model: Optional[lgb.LGBMRegressor] = None
         self.best_params: Optional[Dict[str, Any]] = None
+        self.best_n_estimators: int = 5000
         self.study: Optional[optuna.Study] = None
         self.feature_names: List[str] = []
         self.logger = logging.getLogger(__name__)
+
+    @staticmethod
+    def _build_time_key(X: pd.DataFrame) -> pd.Series:
+        """Построение временного ключа на основе ISO-формата Year-Week"""
+        time_key = pd.to_datetime(
+            X["Year"].astype(str) + "-W" + X["Week"].astype(str).str.zfill(2) + "-1",
+            format="%G-W%V-%u"
+        )
+        return time_key
+
+    @staticmethod
+    def _detect_device() -> Dict[str, Any]:
+        """Определение доступного устройства (GPU/CPU)"""
+        try:
+            # Пробуем создать модель с GPU для проверки доступности
+            test_model = lgb.LGBMRegressor(device="gpu", n_estimators=1, verbosity=-1)
+            test_model.fit(
+                np.array([[1, 2], [3, 4]]),
+                np.array([1, 2])
+            )
+            return {
+                "device": "gpu",
+                "gpu_platform_id": 0,
+                "gpu_device_id": 0
+            }
+        except Exception:
+            return {"device": "cpu"}
 
     def _validate_input_data(self, X_train: pd.DataFrame, X_test: pd.DataFrame, y_train: pd.Series, y_test: pd.Series) -> None:
         """Валидация входных данных для обучения"""
@@ -39,29 +67,34 @@ class LGBMModel(BaseModels):
 
     def objective(self, trial: optuna.Trial, X: pd.DataFrame, y: pd.Series) -> float:
         """Функция для оптимизации гиперпараметров LightGBM"""
+
+        # Определение устройства
+        device_params = self._detect_device()
+
         params = {
             "objective": "regression",
             "metric": "mape",
             "verbosity": -1,
             "boosting_type": "gbdt",
+            **device_params,
             "lambda_l1": trial.suggest_float("lambda_l1", 1e-8, 10.0, log=True),
             "lambda_l2": trial.suggest_float("lambda_l2", 1e-8, 10.0, log=True),
-            "num_leaves": trial.suggest_int("num_leaves", 31, 127),
-            "max_depth": trial.suggest_int("max_depth", 4, 10),
-            "min_data_in_leaf": trial.suggest_int("min_data_in_leaf", 100, 500),
+            "num_leaves": trial.suggest_int("num_leaves", 31, 255),
+            "max_depth": trial.suggest_int("max_depth", 4, 15),
+            "min_data_in_leaf": trial.suggest_int("min_data_in_leaf", 20, 300),
             "feature_fraction": trial.suggest_float("feature_fraction", 0.4, 0.95),
             "bagging_fraction": trial.suggest_float("bagging_fraction", 0.4, 0.95),
             "bagging_freq": trial.suggest_int("bagging_freq", 1, 7),
             "min_child_weight": trial.suggest_float("min_child_weight", 1e-5, 10.0, log=True),
-            "learning_rate": trial.suggest_float("learning_rate", 0.005, 0.1, log=True),
-            "max_bin": trial.suggest_int("max_bin", 255, 500),
+            "learning_rate": trial.suggest_float("learning_rate", 0.005, 0.3, log=True),
+            "max_bin": trial.suggest_int("max_bin", 200, 255),
             "extra_trees": trial.suggest_categorical("extra_trees", [True, False]),
             "path_smooth": trial.suggest_float("path_smooth", 0.0, 10.0),
-            "random_state": 42,
+            "random_state": 42
         }
 
         # Создаём временной ключ и группируем данные
-        time_key = pd.to_datetime(X["Year"].astype(str) + "-W" + X["Week"].astype(str).str.zfill(2) + "-1", format="%Y-W%W-%w")
+        time_key = self._build_time_key(X)
         unique_periods = sorted(time_key.unique())
 
         # Создаём массив индексов периодов (каждый период = один индекс)
@@ -69,6 +102,7 @@ class LGBMModel(BaseModels):
 
         tscv = TimeSeriesSplit(n_splits=5)
         scores = []
+        best_iterations = []
 
         for fold_idx, (train_period_idx, val_period_idx) in enumerate(tscv.split(period_indices)):
             # Получаем периоды для train и validation
@@ -79,14 +113,14 @@ class LGBMModel(BaseModels):
             train_mask = time_key.isin(train_periods)
             val_mask = time_key.isin(val_periods)
 
-            X_train, y_train = X[train_mask], y[train_mask]
-            X_val, y_val = X[val_mask], y[val_mask]
+            X_fold_train, y_fold_train = X[train_mask], y[train_mask]
+            X_fold_val, y_fold_val = X[val_mask], y[val_mask]
 
-            model = lgb.LGBMRegressor(**params, n_estimators=2000)
+            model = lgb.LGBMRegressor(**params, n_estimators=5000)
             model.fit(
-                X_train,
-                y_train,
-                eval_set=[(X_val, y_val)],
+                X_fold_train,
+                y_fold_train,
+                eval_set=[(X_fold_val, y_fold_val)],
                 eval_metric="mape",
                 callbacks=[
                     lgb.early_stopping(300, verbose=False),
@@ -94,17 +128,21 @@ class LGBMModel(BaseModels):
                 ],
             )
 
-            y_pred = model.predict(X_val)
-            mape = np.mean(np.abs((y_val - y_pred) / np.maximum(y_val, 1))) * 100
+            y_pred = model.predict(X_fold_val)
+            mape = np.mean(np.abs((y_fold_val - y_pred) / np.maximum(y_fold_val, 1))) * 100
             scores.append(mape)
+            best_iterations.append(model.best_iteration_)
 
             trial.report(mape, fold_idx)
             if trial.should_prune():
                 raise optuna.TrialPruned()
 
+            # Сохраняем медианное best_iteration для финальной модели
+            trial.set_user_attr("best_n_estimators", int(np.median(best_iterations)))
+
         return np.mean(scores)
 
-    def optimize_hyperparameters(self, X: pd.DataFrame, y: pd.Series, n_trials: int = 100) -> Dict[str, Any]:
+    def optimize_hyperparameters(self, X: pd.DataFrame, y: pd.Series, n_trials: int = 10) -> Dict[str, Any]:
         """Оптимизация гиперпараметров с использованием Optuna"""
         self.logger.info("Начало оптимизации гиперпараметров LightGBM")
 
@@ -113,7 +151,7 @@ class LGBMModel(BaseModels):
         # Добавляем MedianPruner для раннего отсечения неперспективных trials
         pruner = optuna.pruners.MedianPruner(
             n_startup_trials=10,  # Минимум trials перед началом pruning
-            n_warmup_steps=2,  # Пропустить первые 2 фолда перед pruning
+            n_warmup_steps=1,  # Пропустить первые 2 фолда перед pruning
             interval_steps=1,  # Проверка pruning на каждом фолде
         )
 
@@ -125,14 +163,21 @@ class LGBMModel(BaseModels):
             show_progress_bar=True,  # Прогресс-бар
         )
 
+        # Извлекаем лучшие параметры и оптимальное число деревьев
         self.best_params = self.study.best_params
+        self.best_n_estimators = self.study.best_trial.user_attrs.get("best_n_estimators", 5000)
+
+        # Определение устройства
+        device_params = self._detect_device()
+
         self.best_params.update(
             {
                 "objective": "regression",
                 "metric": "mape",
                 "verbosity": -1,
                 "boosting_type": "gbdt",
-                "n_estimators": 20000,
+                **device_params,
+                "n_estimators": self.best_n_estimators,
                 "random_state": 42,
             }
         )
@@ -143,6 +188,7 @@ class LGBMModel(BaseModels):
 
         self.logger.info(f"Оптимизация завершена. Лучший MAPE: {self.study.best_value:.2f}%")
         self.logger.info(f"Лучшие параметры: {self.best_params}")
+        self.logger.info(f"Лучшее число деревьев (медиана CV): {self.best_n_estimators}")
         self.logger.info(f"Trials: {complete_trials} завершено, {pruned_trials} отсечено (pruned)")
 
         return self.best_params
@@ -155,37 +201,20 @@ class LGBMModel(BaseModels):
 
         self.logger.info("Начало обучения финальной модели LightGBM")
 
-        # Оптимизация гиперпараметров если не выполнена
+        # Оптимизация гиперпараметров, если не выполнена
         if self.best_params is None:
             self.best_params = self.optimize_hyperparameters(X_train, y_train)
 
-        # Создаём временной ключ
-        time_key = pd.to_datetime(X_train["Year"].astype(str) + "-W" + X_train["Week"].astype(str).str.zfill(2) + "-1", format="%Y-W%W-%w")
-        unique_periods = sorted(time_key.unique())
-
-        # Берём последние 15% периодов для валидации
-        val_period_count = max(1, int(len(unique_periods) * 0.15))
-        train_periods = unique_periods[:-val_period_count]
-        val_periods = unique_periods[-val_period_count:]
-
-        # Фильтруем данные по периодам
-        train_mask = time_key.isin(train_periods)
-        val_mask = time_key.isin(val_periods)
-
-        X_train_actual, y_train_actual = X_train[train_mask], y_train[train_mask]
-        X_val, y_val = X_train[val_mask], y_train[val_mask]
-
-        self.logger.info(f"Train: {len(train_periods)} периодов ({len(X_train_actual)} строк)")
-        self.logger.info(f"Val: {len(val_periods)} периодов ({len(X_val)} строк)")
+        self.logger.info(f"Train: {len(X_train)} строк, Test (eval): {len(X_test)} строк")
 
         # Обучение финальной модели
         self.model = lgb.LGBMRegressor(**self.best_params)
         self.model.fit(
-            X_train_actual, y_train_actual,
-            eval_set=[(X_val, y_val)],
+            X_train, y_train,
+            eval_set=[(X_test, y_test)],
             eval_metric="mape",
             callbacks=[
-                lgb.early_stopping(800, verbose=True),
+                lgb.early_stopping(500, verbose=True),
                 lgb.log_evaluation(500)
             ]
         )
@@ -228,8 +257,20 @@ class LGBMModel(BaseModels):
 
             # Сохранение лучших параметров
             params_path = REPORTS_PATH / "lgbm_best_params.json"
+
+            serializable_params = {}
+            for key, value in self.best_params.items():
+                if isinstance(value, (np.integer,)):
+                    serializable_params[key] = int(value)
+                elif isinstance(value, (np.floating,)):
+                    serializable_params[key] = float(value)
+                elif isinstance(value, np.bool_):
+                    serializable_params[key] = bool(value)
+                else:
+                    serializable_params[key] = value
+
             with open(params_path, "w", encoding="utf-8") as f:
-                json.dump(self.best_params, f, indent=2, ensure_ascii=False)
+                json.dump(serializable_params, f, indent=2, ensure_ascii=False)
 
             self.logger.info("Модель и метрики сохранены:")
             self.logger.info(f"- Модель: {model_path}")
