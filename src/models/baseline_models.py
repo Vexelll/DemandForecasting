@@ -7,22 +7,23 @@ from sklearn.dummy import DummyRegressor
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple
 from src.models.base_model import BaseModels
-from config.settings import DATA_PATH, all_stores_time_split, REPORTS_PATH
+from config.settings import DATA_PATH, REPORTS_PATH, all_stores_time_split, get_model_config, get_reporting_config, setup_logging
 
 class BaselineModels(BaseModels):
     def __init__(self) -> None:
         super().__init__()
         self.logger = logging.getLogger(__name__)
+        random_state = get_model_config().get("random_state", 42)
         self.models = {
             "LinearRegression": LinearRegression(),
-            "RandomForest": RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1),
+            "RandomForest": RandomForestRegressor(n_estimators=100, random_state=random_state, n_jobs=-1),
             "MeanBaseline": DummyRegressor(strategy="mean")
         }
         self.trained_models: Dict[str, Any] = {}
         self.results: Dict[str, Dict[str, Any]] = {}
 
     def _validate_input_data(self, X_train: pd.DataFrame, X_test: pd.DataFrame, y_train: pd.Series, y_test: pd.Series) -> None:
-        """Валидация входных данных для обучения"""
+        """Проверяет наличие Sales и числовые типы"""
         if X_train is None or X_test is None or y_train is None or y_test is None:
             raise ValueError("Все входные данные должны быть предоставлены")
 
@@ -36,7 +37,7 @@ class BaselineModels(BaseModels):
             self.logger.warning("Малый объем обучающих данных может повлиять на качество моделей")
 
     def _load_dataset(self, data_path: Path) -> pd.DataFrame:
-        """Загрузка и валидация набора данных"""
+        """csv -> DataFrame, проверяет что файл не пуст"""
         if not data_path.exists():
             raise FileNotFoundError(f"Файл с данными не найден: {data_path}")
 
@@ -54,7 +55,7 @@ class BaselineModels(BaseModels):
         return final_data
 
     def train_and_evaluate(self, X_train: pd.DataFrame, X_test: pd.DataFrame, y_train: pd.Series, y_test: pd.Series) -> Dict[str, Dict[str, Any]]:
-        """Обучение и оценка базовых моделей"""
+        """Mean, Median, LinearRegression, Ridge, RandomForest - все на одном split"""
 
         # Валидация входных данных
         self._validate_input_data(X_train, X_test, y_train, y_test)
@@ -103,7 +104,7 @@ class BaselineModels(BaseModels):
         return results
 
     def _save_results(self, results: Dict[str, Dict[str, Any]], training_times: Dict[str, float]) -> None:
-        """Сохранение результатов обучения в структурированном виде"""
+        """results.csv + summary.json + график сравнения"""
         try:
             # Преобразование результатов в DataFrame
             results_df = pd.DataFrame.from_dict(results, orient="index")
@@ -111,8 +112,10 @@ class BaselineModels(BaseModels):
             # Добавление времени обучения
             results_df["training_time_seconds"] = results_df.index.map(training_times)
 
+            report_files = get_reporting_config().get("output_files", {})
+
             # Сохранение в CSV
-            results_path = REPORTS_PATH / "baseline_models_results.csv"
+            results_path = REPORTS_PATH / report_files.get("baseline_results", "baseline_models_results.csv")
             results_df.to_csv(results_path, index=True)
 
             # Дополнительное сохранение в JSON для удобства чтения
@@ -126,7 +129,7 @@ class BaselineModels(BaseModels):
                 }
             }
 
-            json_path = REPORTS_PATH / "baseline_models_summary.json"
+            json_path = REPORTS_PATH / report_files.get("baseline_summary", "baseline_models_summary.json")
             with open(json_path, "w", encoding="utf-8") as f:
                 json.dump(json_results, f, indent=2, ensure_ascii=False)
 
@@ -137,7 +140,7 @@ class BaselineModels(BaseModels):
             raise
 
     def _log_summary_report(self, results: Dict[str, Dict[str, Any]], training_times: Dict[str, float]) -> None:
-        """Вывод сводного отчета по всем моделям в лог"""
+        """Табличка метрик в лог"""
         self.logger.info("=" * 60)
         self.logger.info("СВОДНЫЙ ОТЧЕТ ПО БАЗОВЫМ МОДЕЛЯМ")
         self.logger.info("=" * 60)
@@ -171,11 +174,14 @@ class BaselineModels(BaseModels):
             for model_name, error_info in failed_models.items():
                 self.logger.warning(f"{model_name}: {error_info.get("error", "Неизвестная ошибка")}")
 
-    def run_complete_analysis(self, data_path: Optional[Path] = None, train_time_ratio: float = 0.8) -> Dict[str, Dict[str, Any]]:
-        """Полный цикл анализа базовых моделей"""
+    def run_complete_analysis(self, data_path: Optional[Path] = None, train_time_ratio: Optional[float] = None) -> Dict[str, Dict[str, Any]]:
+        """Загрузка -> обучение всех -> сохранение -> отчет"""
         try:
             if data_path is None:
                 data_path = DATA_PATH / "processed/final_dataset.csv"
+
+            if train_time_ratio is None:
+                train_time_ratio = get_model_config().get("train_time_ratio", 0.8)
 
             self.logger.info("Загрузка данных для анализа базовых моделей...")
             final_data = self._load_dataset(data_path)
@@ -193,7 +199,7 @@ class BaselineModels(BaseModels):
             raise
 
     def get_best_model(self) -> Tuple[Any, str]:
-        """Получение лучшей модели на основе метрик"""
+        """Лучшая по mape"""
         if not self.results:
             raise ValueError("Анализ не был выполнен. Сначала запустите run_complete_analysis()")
 
@@ -205,21 +211,15 @@ class BaselineModels(BaseModels):
         return self.trained_models[best_model_name], best_model_name
 
     def get_model_comparison_data(self) -> pd.DataFrame:
-        """Получение данных для сравнения моделей в виде DataFrame"""
+        """metrics dict -> DataFrame для удобного сравнения"""
         if not self.results:
             raise ValueError("Анализ не был выполнен. Сначала запустите run_complete_analysis()")
 
         return pd.DataFrame.from_dict(self.results, orient="index")
 
 def main():
-    """Основная функция для запуска анализа базовых моделей"""
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S"
-    )
+    setup_logging()
     logger = logging.getLogger(__name__)
-
     try:
         logger.info("Инициализация анализа базовых моделей...")
         baseline_analyzer = BaselineModels()

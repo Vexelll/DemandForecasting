@@ -1,0 +1,130 @@
+# Конфигурация системы прогнозирования спроса Rossman
+
+# Пути проекта
+paths:
+  data: "data"
+  models: "models"
+  reports: "reports"
+
+# Файлы данных
+data_files:
+  raw:
+    train: "raw/train.csv"
+    store: "raw/store.csv"
+    test: "raw/test.csv"
+  processed:
+    cleaned: "processed/cleaned_data.csv"
+    final_dataset: "processed/final_dataset.csv"
+    sales_history: "processed/sales_history.pkl"
+    sales_history_export: "processed/sales_history_export.csv"
+  outputs:
+    predictions: "outputs/predictions.csv"
+  database: "demand_forecasting.db"
+
+# Модель LightGBM
+model:
+  # Общие параметры обучения
+  random_state: 42
+  train_time_ratio: 0.8
+  n_estimators_max: 5000
+  early_stopping_rounds: 500
+  model_filename: "lgbm_final_model.pkl"
+
+  # Пространство поиска гиперпараметров (Optuna)
+  search_space:
+    lambda_l1: [0.1, 0.50]
+    lambda_l2: [0.1, 0.50]
+    num_leaves: [31, 255]
+    max_depth: [4, 15]
+    min_data_in_leaf: [50, 500]
+    feature_fraction: [0.4, 0.95]
+    bagging_fraction: [0.4, 0.95]
+    bagging_freq: [1, 7]
+    min_child_weight: [0.00001, 10.0]
+    learning_rate: [0.005, 0.3]
+    max_bin: [200, 255]
+    path_smooth: [1.0, 50.0]
+
+  # Кросс-валидация
+  cv:
+    n_splits: 3
+    method: "TimeSeriesSplit"
+
+  # Пороги оценки качества MAPE (%)
+  quality_thresholds:
+    excellent: 10
+    good: 15
+
+# Оптимизация гиперпараметров (Optuna)
+optimization:
+  n_trials: 100
+  direction: "minimize"
+  sampler_seed: 42
+  pruner:
+    n_startup_trials: 10
+    n_warmup_steps: 1
+    interval_steps: 1
+
+# Feature Engineering
+feature_engineering:
+  lag_days: [1, 7, 14, 28]
+  rolling_window_min_periods: 1
+
+# Пайплайн (Airflow DAG)
+pipeline:
+  dag_id: "demand_forecasting_pipeline"
+  owner: "data_engineering"
+  start_date: "2024-01-01"
+  retries: 2
+  retry_delay_minutes: 5
+  max_active_runs: 1
+  email_on_failure: true
+  email_on_retry: false
+
+  # Расписание DAG (cron-выражения)
+  schedules:
+    daily_forecast: "0 2 * * *" # Ежедневно в 2:00
+    weekly_retraining: "0 3 * * 0" # Воскресенье в 3:00
+
+  # Таймауты выполнения задач (минуты)
+  execution_timeouts:
+    retrain_model: 180
+    generate_predictions: 30
+
+# Мониторинг DAG
+monitoring:
+  max_stored_runs: 50
+  data_freshness_threshold_hours: 24
+  success_rate_alert_threshold: 80
+  consecutive_failures_alert: 2
+
+# База данных
+database:
+  connection_timeout: 60
+
+# Дашборд
+dashboard:
+  port: 8050
+  debug: true
+  plot_style: "seaborn-v0_8-whitegrid"
+
+# Отчеты и визуализация
+reporting:
+  plot_dpi: 300
+  plot_bbox: "tight"
+  plot_facecolor: "white"
+  feature_importance_top_n: 20
+  output_files:
+    baseline_results: "baseline_models_results.csv"
+    baseline_summary: "baseline_models_summary.json"
+    lgbm_metrics: "lgbm_model_metrics.csv"
+    lgbm_predictions: "lgbm_predictions.csv"
+    lgbm_best_params: "lgbm_best_params.json"
+    performance_report: "performance_report.json"
+    dag_monitoring: "dag_monitoring.json"
+
+# Логирование
+logging:
+  level: "INFO"
+  format: "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+  date_format: "%Y-%m-%d %H:%M:%S"

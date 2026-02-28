@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 
 
 def create_controls(data):
-    """Создание панели элементов управления дашбордом"""
+    """Dropdown магазинов + DatePicker + кнопка обновления"""
     if len(data) == 0:
         store_options = [{"label": "Нет данных", "value": 0}]
         min_date = max_date = datetime.now().date()
@@ -35,7 +35,8 @@ def create_controls(data):
                     value=0,
                     clearable=False,
                     className="store-dropdown",
-                    placeholder="Выберите магазин..."
+                    placeholder="Выберите магазин...",
+                    searchable=True
                 )
             ], className="control-group"),
 
@@ -70,13 +71,16 @@ def create_controls(data):
             # Кнопка обновления
             html.Div([
                 html.Label("Действия:", className="control-label"),
-                html.Button("Обновить данные",
-                            id="refresh-btn",
-                            n_clicks=0,
-                            className="refresh-button"),
-                html.Small("Последнее обновление: -",
-                           id="last-update-text",
-                           style={"display": "block", "marginTop": "5px", "color": "#7f8c8d", "fontSize": "12px"})
+                html.Button(
+                    "Обновить данные",
+                    id="refresh-btn",
+                    n_clicks=0,
+                    className="refresh-button"),
+                html.Small(
+                    "Последнее обновление: -",
+                    id="last-update-text",
+                    className="last-update-info"
+                )
             ], className="control-group")
 
         ], className="controls-container")

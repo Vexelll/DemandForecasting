@@ -3,15 +3,14 @@ import numpy as np
 import logging
 from pathlib import Path
 from typing import Dict, Any
-from config.settings import DATA_PATH
+from config.settings import DATA_PATH, setup_logging
 
 
 class DataPreprocessor:
-    # Константы для валидации данных
+    """Загрузка train/store csv, очистка (дубли, выбросы, закрытые дни) и приведение типов"""
+
     REQUIRED_TRAIN_COLUMNS = ["Store", "Date", "Sales", "Open", "DayOfWeek", "Promo"]
     REQUIRED_STORE_COLUMNS = ["Store", "StoreType", "Assortment"]
-
-    # Константы для валидации типов данных
     NUMERIC_COLUMNS = ["Sales", "Customers", "CompetitionDistance", "Open", "Promo"]
     INTEGER_COLUMNS = ["Store", "DayOfWeek", "Open", "Promo", "SchoolHoliday", "Promo2"]
 
@@ -19,62 +18,55 @@ class DataPreprocessor:
         self.verbose = verbose
         self.logger = logging.getLogger(__name__)
 
-        # Настройка уровня логирования
+        # Варианты логирования: DEBUG или INFO(дефолт)
         if self.verbose:
             self.logger.setLevel(logging.DEBUG)
         else:
             self.logger.setLevel(logging.INFO)
 
     def load_and_merge_data(self, train_path: Path, store_path: Path) -> pd.DataFrame:
-        """Загрузка и объединение данных о продажах и информации о магазинах"""
-        self.logger.info(f"Загрузка данных: {train_path}, {store_path}")
+        """train.csv + store.csv -> один DataFrame по ключу Store"""
+        self.logger.info(f"Загрузка: {train_path}, {store_path}")
 
-        # Валидация существования файлов
         if not train_path.exists():
-            raise FileNotFoundError(f"Файл с данными продаж не найден: {train_path}")
+            raise FileNotFoundError(f"Файл продаж не найден: {train_path}")
         if not store_path.exists():
-            raise FileNotFoundError(f"Файл с информацией о магазинах не найден: {store_path}")
+            raise FileNotFoundError(f"Файл магазинов не найден: {store_path}")
 
         try:
-            # Загрузка данных
             train_data = pd.read_csv(train_path, low_memory=False)
             store_data = pd.read_csv(store_path, low_memory=False)
-
-            self.logger.debug(f"Загружено данных: train={train_data.shape}, store={store_data.shape}")
-
+            self.logger.debug(f"Размеры: train={train_data.shape}, store={store_data.shape}")
         except pd.errors.EmptyDataError as e:
             raise pd.errors.EmptyDataError("Файл данных пуст") from e
         except Exception as e:
-            raise Exception(f"Ошибка загрузки данных: {e}") from e
+            raise Exception(f"Ошибка загрузки: {e}") from e
 
-        # Валидация обязательных колонок
         self._validate_dataframe_columns(train_data, self.REQUIRED_TRAIN_COLUMNS, "train")
         self._validate_dataframe_columns(store_data, self.REQUIRED_STORE_COLUMNS, "store")
 
-        # Объединение данных
         merged_data = pd.merge(train_data, store_data, on="Store", how="left")
 
-        # Анализ успешности объединения
+        # Если магазин есть в train, но нет в store - признаки будут NaN
         unmatched_stores = set(train_data["Store"].unique()) - set(store_data["Store"].unique())
         if unmatched_stores:
-            self.logger.warning(f"Найдены магазины без информации: {unmatched_stores}")
+            self.logger.warning(f"Есть магазины без информации: {unmatched_stores}")
 
-        self.logger.info(f"Данные объединены: {merged_data.shape[0]} записей, {merged_data.shape[1]} колонок")
+        self.logger.info(f"Merge готов: {merged_data.shape[0]} записей, {merged_data.shape[1]} колонок")
 
         return merged_data
 
     def _validate_dataframe_columns(self, df: pd.DataFrame, required_columns: list[str], data_type: str) -> None:
-        """Валидация наличия обязательных колонок в DataFrame"""
+        """Проверяем, что нужные колонки есть, иначе ValueError"""
         missing_columns = [col for col in required_columns if col not in df.columns]
         if missing_columns:
-            raise ValueError(f"Отсутствуют обязательные колонки в {data_type} данных: {missing_columns}")
+            raise ValueError(f"Нет обязательных колонок в {data_type}: {missing_columns}")
 
     def _validate_data_types(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Проверка и приведение типов данных"""
+        """Приведение типов: числовые -> numeric, целые -> int/Int64"""
         df = df.copy()
         converted_columns = []
 
-        # Числовые колонки
         for col in self.NUMERIC_COLUMNS:
             if col in df.columns:
                 original_dtype = df[col].dtype
@@ -82,37 +74,34 @@ class DataPreprocessor:
                 if original_dtype != df[col].dtype:
                     converted_columns.append(f"{col}: {original_dtype} -> {df[col].dtype}")
 
-        # Целочисленные колонки (только если нет NaN)
         for col in self.INTEGER_COLUMNS:
             if col in df.columns:
-                # Используем Int64 для поддержки NaN в целых числах
+                # Int64 вместо int - поддерживает NaN без падения
                 if df[col].notna().all():
                     df[col] = df[col].astype(int)
                 else:
                     df[col] = df[col].astype("Int64")
 
         if converted_columns:
-            self.logger.debug(f"Преобразованы типы данных: {converted_columns}")
+            self.logger.debug(f"Типы изменены: {converted_columns}")
 
         return df
 
     def _remove_duplicates(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Удаление дубликатов по ключевым полям"""
+        """Store + Date должны быть уникальны, иначе лаги поедут"""
         before_count = len(df)
-
-        # Дубликаты по Store + Date недопустимы
         df = df.drop_duplicates(subset=["Store", "Date"], keep="last")
 
         removed = before_count - len(df)
         if removed > 0:
-            self.logger.warning(f"Удалено дубликатов (Store + Date): {removed}")
+            self.logger.warning(f"Дубликаты (Store+Date): удалено {removed}")
 
         return df
 
     def _detect_outliers(self, df: pd.DataFrame, column: str = "Sales", method: str = "iqr", threshold: float = 3.0) -> pd.Series:
-        """Определение выбросов в данных"""
+        """IQR или z-score детекция, возвращает bool маску"""
         if column not in df.columns:
-            self.logger.warning(f"Колонка {column} не найдена для детекции выбросов")
+            self.logger.warning(f"Колонка {column} не найдена")
             return pd.Series([False] * len(df), index=df.index)
 
         if method == "iqr":
@@ -125,7 +114,7 @@ class DataPreprocessor:
             outliers = (df[column] < lower_bound) | (df[column] > upper_bound)
 
             self.logger.debug(
-                f"Детекция выбросов (IQR): Q1={Q1:.2f}, Q3={Q3:.2f}, "
+                f"IQR: Q1={Q1:.2f}, Q3={Q3:.2f}, "
                 f"Границы=[{lower_bound:.2f}, {upper_bound:.2f}]"
             )
 
@@ -134,107 +123,85 @@ class DataPreprocessor:
             std = df[column].std()
 
             if std == 0:
-                self.logger.warning(f"Стандартное отклонение {column} равно 0, выбросы не определены")
+                self.logger.warning(f"std({column}) = 0, выбросы не определить")
                 return pd.Series([False] * len(df), index=df.index)
 
             z_score = np.abs((df[column] - mean) / std)
             outliers = z_score > threshold
-
-            self.logger.debug(f"Детекция выбросов (z-score): mean={mean:.2f}, std={std:.2f}, threshold={threshold}")
+            self.logger.debug(f"z-score: mean={mean:.2f}, std={std:.2f}, порог={threshold}")
 
         else:
-            raise ValueError(f"Неизвестный метод детекции выбросов: {method}. Используйте 'iqr' или 'zscore")
+            raise ValueError(f"Неизвестный метод: {method}. Используйте 'iqr' или 'zscore")
 
         outlier_count = outliers.sum()
         if outlier_count > 0:
-            self.logger.info(f"Обнаружено выбросов в {column}: {outlier_count} ({outlier_count / len(df) * 100:.2f}%)")
+            self.logger.info(f"Выбросов в {column}: {outlier_count} ({outlier_count / len(df) * 100:.2f}%)")
 
         return outliers
 
     def clean_data(self, df: pd.DataFrame, remove_outliers: bool = False, outlier_method: str = "iqr", outlier_threshold: float = 3.0) -> pd.DataFrame:
-        """Очистка и фильтрация данных для подготовки к анализу"""
-        self.logger.info("Начало очистки данных")
+        """Основная очистка: типы -> дубли -> закрытые -> нулевые Sales -> даты -> выбросы"""
+        self.logger.info("Очистка данных...")
+        original_count = df.shape[0]
 
-        original_shape = df.shape
-
-        # Создание копии для избежания side effects
         cleaned_df = df.copy()
-
-        # Валидация и приведение типов данных
         cleaned_df = self._validate_data_types(cleaned_df)
-
-        # Удаление дубликатов
         cleaned_df = self._remove_duplicates(cleaned_df)
 
-        # Фильтрация открытых магазинов
+        # Закрытые магазины: Sales всегда 0, для обучения бесполезны
         if "Open" in cleaned_df.columns:
             before_open = len(cleaned_df)
             cleaned_df = cleaned_df[cleaned_df["Open"] == 1]
-            removed_closed = before_open - len(cleaned_df)
-            self.logger.debug(f"Отфильтрованы закрытые магазины: {removed_closed} записей")
+            self.logger.debug(f"Закрытые магазины: -{before_open - len(cleaned_df)}")
 
-        # Фильтрация валидных продаж
+        # Нулевые/NaN продажи - нет смысла учить модель на них
         before_sales = len(cleaned_df)
-        sales_mask = (cleaned_df["Sales"] > 0) & (cleaned_df["Sales"].notna())
-        cleaned_df = cleaned_df[sales_mask]
-        removed_sales = before_sales - len(cleaned_df)
-        self.logger.debug(f"Отфильтрованы невалидные продажи: {removed_sales} записей")
+        cleaned_df = cleaned_df[(cleaned_df["Sales"] > 0) & (cleaned_df["Sales"].notna())]
+        self.logger.debug(f"Невалидные Sales: -{before_sales - len(cleaned_df)} записей")
 
-        # Преобразование и валидация дат
         cleaned_df = self._process_dates(cleaned_df)
 
-        # Опциональное удаление выбросов
         if remove_outliers:
             outlier_mask = self._detect_outliers(
-                cleaned_df,
-                column="Sales",
-                method=outlier_method,
-                threshold=outlier_threshold
+                cleaned_df, column="Sales",
+                method=outlier_method, threshold=outlier_threshold
             )
             before_outliers = len(cleaned_df)
             cleaned_df = cleaned_df[~outlier_mask]
-            removed_outliers = before_outliers - len(cleaned_df)
-            self.logger.info(f"Удалено выбросов: {removed_outliers} записей")
+            self.logger.info(f"Выбросы удалены: -{before_outliers - len(cleaned_df)} записей")
 
-        # Сортировка данных
+        # Сортировка по магазину и дате - важно для корректных лагов дальше
         cleaned_df = cleaned_df.sort_values(["Store", "Date"]).reset_index(drop=True)
 
-        # Анализ результатов очистки
-        records_removed = original_shape[0] - len(cleaned_df)
-        removal_percentage = (records_removed / original_shape[0]) * 100 if original_shape[0] > 0 else 0
-
-        self.logger.info(
-            f"Очистка завершена: {original_shape[0]} -> {len(cleaned_df)} "
-            f"(-{records_removed}, {removal_percentage:.1f}%)"
-        )
+        removed = original_count - len(cleaned_df)
+        pct = (removed / original_count * 100) if original_count > 0 else 0
+        self.logger.info(f"Очистка: {original_count} -> {len(cleaned_df)} (-{removed}, {pct:.1f}%)")
 
         return cleaned_df
 
     def _process_dates(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Обработка и валидация колонки с датами"""
+        """Date -> datetime, невалидные даты выкидываются"""
         if "Date" not in df.columns:
-            self.logger.warning("Отсутствует колонка Date в данных")
+            self.logger.warning("Нет колонки Date")
             return df
 
-        # Создаем копию для безопасности
         df = df.copy()
 
         try:
             df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
 
-            # Подсчет и фильтрация невалидных дат
             invalid_dates = df["Date"].isna().sum()
             if invalid_dates > 0:
-                self.logger.warning(f"Обнаружено {invalid_dates} невалидных дат, записи удалены")
+                self.logger.warning(f"Невалидных дат: {invalid_dates}, удалены")
                 df = df[df["Date"].notna()]
 
             return df
 
         except Exception as e:
-            raise ValueError(f"Ошибка преобразования дат: {e}") from e
+            raise ValueError(f"Ошибка парсинга дат: {e}") from e
 
     def get_outlier_statistics(self, df: pd.DataFrame, column: str = "Sales", method: str = "iqr", threshold: float = 3.0) -> Dict[str, Any]:
-        """Получение статистики по выбросам"""
+        """Статистика выбросов: сколько, какие границы, распределение"""
         outlier_mask = self._detect_outliers(df, column, method, threshold)
         outliers = df[outlier_mask][column]
         normal = df[~outlier_mask][column]
@@ -261,41 +228,30 @@ class DataPreprocessor:
         return stats
 
     def save_processed_data(self, df: pd.DataFrame, path: Path) -> None:
-        """Сохранение обработанных данных в csv"""
+        """Дамп в csv, создает директорию, если нет"""
         try:
-            # Создание директории, если не существует
             path.parent.mkdir(parents=True, exist_ok=True)
-
             df.to_csv(path, index=False)
-            self.logger.info(f"Данные сохранены: {path} (записей: {len(df)})")
-
+            self.logger.info(f"Сохранено: {path} ({len(df)} записей)")
         except Exception as e:
             raise IOError(f"Не удалось сохранить данные в {path}: {e}") from e
 
 
 if __name__ == "__main__":
-    # Настройка логирования
-    logging.basicConfig(
-        level=logging.DEBUG,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    )
+    setup_logging()
     logger = logging.getLogger(__name__)
 
     preprocessor = DataPreprocessor(verbose=False)
 
-    # Загрузка и объединение данных
     data = preprocessor.load_and_merge_data(DATA_PATH / "raw/train.csv", DATA_PATH / "raw/store.csv")
 
-    # Анализ выбросов перед очисткой
+    # Смотрим на выбросы до очистки
     outlier_stats = preprocessor.get_outlier_statistics(data, column="Sales")
     logger.info(f"Статистика выбросов до очистки:")
-    logger.info(f"Всего записей: {outlier_stats["total_records"]}")
-    logger.info(f"Выбросов: {outlier_stats["outliers_count"]} ({outlier_stats["outliers_percentage"]:.2f})%")
+    logger.info(f"Записей: {outlier_stats["total_records"]}")
+    logger.info(f"Выбросов: {outlier_stats["outliers_count"]} ({outlier_stats["outliers_percentage"]:.2f}%)")
 
-    # Очистка данных
     cleaned_data = preprocessor.clean_data(data)
-
-    # Сохранение результатов
     preprocessor.save_processed_data(cleaned_data, DATA_PATH / "processed/cleaned_data.csv")
 
-    logger.info("Предобработка данных успешно завершена!")
+    logger.info("Предобработка завершена")

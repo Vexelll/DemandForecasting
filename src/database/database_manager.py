@@ -8,12 +8,12 @@ from datetime import datetime
 from typing import Optional, Dict, Any, List, Union
 from contextlib import contextmanager
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
-from config.settings import DATA_PATH
+from config.settings import DATA_PATH, get_database_config
 
 
 class DatabaseManager:
-    """Менеджер реляционной базы данных для прогнозирования спроса"""
-    # Версия схемы БД для будущих миграций
+    """SQLite хранилище: история продаж, прогнозы, метрики, логи запусков"""
+    # Версия схемы - на случай если придется менять таблицы
     DB_VERSION = 1
 
     def __init__(self, db_path: Optional[Path] = None) -> None:
@@ -28,8 +28,9 @@ class DatabaseManager:
 
     @contextmanager
     def _get_connection(self):
-        """Контекстный менеджер для безопасного подключения к БД"""
-        conn = sqlite3.connect(str(self.db_path), timeout=60)
+        """Подключение к SQLite c WAL и настройкой PRAGMA"""
+        db_cfg = get_database_config()
+        conn = sqlite3.connect(str(self.db_path), timeout=db_cfg.get("connection_timeout", 60))
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA cache_size=10000")
         conn.execute("PRAGMA foreign_keys=ON")
@@ -45,11 +46,11 @@ class DatabaseManager:
             conn.close()
 
     def _initialize_database(self) -> None:
-        """Инициализация схемы БД"""
+        """Создает таблицы, если их еще нет"""
         with self._get_connection() as conn:
             cursor = conn.cursor()
 
-            # Таблица 1: История продаж (замена sales_history.pkl)
+            # sales_history - замена pickle, теперь можно делать SQL-запросы по датам
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS sales_history (
                     store_id INTEGER NOT NULL,
@@ -66,7 +67,6 @@ class DatabaseManager:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_sales_store ON sales_history(store_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_sales_date ON sales_history(date)")
 
-            # Таблица 2: Результаты прогнозов
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS predictions (
                     run_id TEXT NOT NULL,
@@ -83,7 +83,6 @@ class DatabaseManager:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_predictions_run ON predictions(run_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_predictions_store_date ON predictions(store_id, date)")
 
-            # Таблица 3: Метаданные запусков пайплайна
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS pipeline_runs (
                     run_id TEXT PRIMARY KEY NOT NULL,
@@ -99,7 +98,6 @@ class DatabaseManager:
                 )
             """)
 
-            # Таблица 4: Метрики модели (история обучений)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS model_metrics (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -114,7 +112,6 @@ class DatabaseManager:
                 )
             """)
 
-            # Метатаблица для версии схемы
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS schema_version (
                     version INTEGER NOT NULL,
@@ -122,7 +119,6 @@ class DatabaseManager:
                 )
             """)
 
-            # Записываем версию схемы при первой инициализации
             cursor.execute("SELECT COUNT(*) FROM schema_version")
             if cursor.fetchone()[0] == 0:
                 cursor.execute(
@@ -140,12 +136,12 @@ class DatabaseManager:
         )
     )
     def save_sales_history(self, df: pd.DataFrame) -> int:
-        """Сохранение/обновление истории продаж в БД"""
+        """Upsert продаж: ISERT OR REPLACE по ключу (store_id, date)"""
         if df is None or len(df) == 0:
             self.logger.warning("Попытка сохранения пустого DataFrame в sales_history")
             return 0
 
-        # Маппинг колонок DataFrame -> колонок БД
+        # DataFrame колонки -> БД колонки
         column_mapping = {
             "Store": "store_id",
             "Date": "date",
@@ -156,17 +152,15 @@ class DatabaseManager:
             "SchoolHoliday": "school_holiday"
         }
 
-        # Выбираем только существующие колонки
         available_columns = [col for col in column_mapping if col in df.columns]
         db_df = df[available_columns].copy().rename(columns=column_mapping)
 
-        # Приведение даты к строковому формату
+        # SQLite не имеет типа DATE - храним как TEXT в ISO формате (YYYY-MM-DD)
         if "date" in db_df.columns:
             db_df["date"] = pd.to_datetime(db_df["date"]).dt.strftime("%Y-%m-%d")
 
         saved_count = 0
         with self._get_connection() as conn:
-            # Batch-вставка через executemany
             db_columns = list(db_df.columns)
             records = []
             for row in db_df.itertuples(index=False):
@@ -196,7 +190,7 @@ class DatabaseManager:
         return saved_count
 
     def load_sales_history(self) -> pd.DataFrame:
-        """Загрузка полной истории продаж из БД"""
+        """Вся история - нужна для расчета лагов"""
         try:
             with self._get_connection() as conn:
                 df = pd.read_sql_query(
@@ -219,7 +213,7 @@ class DatabaseManager:
             return pd.DataFrame()
 
     def get_store_history(self, store_id: int, days_back: int = 365, end_date: Optional[str] = None) -> pd.DataFrame:
-        """Получение истории продаж конкретного магазина"""
+        """История одного магазина за N дней назад от end_date"""
         try:
             if end_date is None:
                 end_date_clause = "(SELECT MAX(date) FROM sales_history WHERE store_id = ?)"
@@ -253,7 +247,7 @@ class DatabaseManager:
             return pd.DataFrame()
 
     def get_sales_history_stats(self) -> Dict[str, Any]:
-        """Получение статистики по истории продаж"""
+        """Кол-во записей, магазинов, диапазон дат, размер файла"""
         try:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
@@ -289,6 +283,21 @@ class DatabaseManager:
             self.logger.error(f"Ошибка получения статистики sales_history: {e}")
             return {"total_records": 0, "error": str(e)}
 
+    def delete_old_sales_history(self, cutoff_date: str) -> str:
+        """Чистка старых данных по cutoff_date"""
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "DELETE FROM sales_history WHERE date < ?",
+                    (cutoff_date,)
+                )
+                deleted = cursor.rowcount
+                self.logger.info(f"Удалено из sales_history: {deleted} записей (cutoff={cutoff_date})")
+                return deleted
+        except Exception as e:
+            self.logger.error(f"Ошибка удаления устаревших записей: {e}")
+            return 0
 
     @retry(
         stop=stop_after_attempt(3),
@@ -296,12 +305,11 @@ class DatabaseManager:
         retry=retry_if_exception_type(sqlite3.OperationalError)
     )
     def save_predictions(self, df: pd.DataFrame, run_id: str) -> int:
-        """Сохранение результатов прогнозирования с привязкой к run_id"""
+        """Прогнозы в таблицу predictions, привязаны к run_id"""
         if df is None or len(df) == 0:
             self.logger.warning("Попытка сохранения пустого DataFrame в predictions")
             return 0
 
-        # Маппинг колонок
         column_mapping = {
             "Store": "store_id",
             "Date": "date",
@@ -319,7 +327,6 @@ class DatabaseManager:
 
         saved_count = 0
         with self._get_connection() as conn:
-            # Batch-вставка
             db_columns = list(db_df.columns)
             records = []
             for row in db_df.itertuples(index=False):
@@ -349,7 +356,7 @@ class DatabaseManager:
         return saved_count
 
     def get_predictions_by_run(self, run_id: str) -> pd.DataFrame:
-        """Получение прогнозов по индентификатору запуска"""
+        """Прогнозы конкретного run_id с маппингом колонок обратно в CamelCase"""
         try:
             with self._get_connection() as conn:
                 df = pd.read_sql_query(
@@ -373,7 +380,7 @@ class DatabaseManager:
             return pd.DataFrame()
 
     def get_latest_predictions(self) -> pd.DataFrame:
-        """Получение прогнозов последнего запуска"""
+        """Последний run -> прогнозы"""
         try:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
@@ -389,7 +396,7 @@ class DatabaseManager:
             return pd.DataFrame()
 
     def list_prediction_runs(self, limit: int = 20) -> List[Dict[str, Any]]:
-        """Список последних запусков прогнозирования"""
+        """Список run_id с мета: кол-во записей, даты, avg mape"""
         try:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
@@ -413,7 +420,6 @@ class DatabaseManager:
             self.logger.error(f"Ошибка получения списка запусков: {e}")
             return []
 
-
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=10),
@@ -421,7 +427,7 @@ class DatabaseManager:
     )
     def log_pipeline_run(self, run_id: str, dag_name: str, status: str, started_at: Optional[str] = None, finished_at: Optional[str] = None, duration_seconds: Optional[float] = None, records_processed: int = 0,
         mape: Optional[float] = None, rmse: Optional[float] = None, mae: Optional[float] = None, r2_score: Optional[float] = None, error_message: Optional[str] = None, model_version: Optional[str] = None) -> None:
-        """Логирование запуска пайплайна в БД"""
+        """Пишет в pipeline_runs: run_id, статус, метрики, длительность"""
         if started_at is None:
             started_at = datetime.now().isoformat()
         if finished_at is None:
@@ -444,7 +450,7 @@ class DatabaseManager:
             self.logger.error(f"Ошибка логирования запуска пайплайна: {e}")
 
     def get_pipeline_runs(self, limit: int = 20) -> List[Dict[str, Any]]:
-        """Получение истории запусков пайплайна"""
+        """Последние N запусков из pipeline_runs"""
         try:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
@@ -459,7 +465,7 @@ class DatabaseManager:
 
     def save_model_metrics(self, metrics: Dict[str, Any], model_version: Optional[str] = None, n_features: Optional[int] = None, n_train_samples: Optional[int] = None, n_test_samples: Optional[int] = None,
         best_params: Optional[Dict] = None, training_duration_seconds: Optional[float] = None) -> None:
-        """Сохранение метрик обучения модели"""
+        """INSERT в model_metrics после каждого обучения"""
         if model_version is None:
             model_version = f"v_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
@@ -481,13 +487,12 @@ class DatabaseManager:
             self.logger.error(f"Ошибка сохранения метрик модели: {e}")
 
     def get_model_metrics_history(self, limit: int = 20) -> List[Dict[str, Any]]:
-        """Получение истории метрик модели для анализа трендов"""
+        """Тренд MAPE/RMSE по обучениям - для дашборда"""
         try:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute(
-                """SELECT * FROM model_metrics
-                    ORDER BY trained_at DESC LIMIT ?""",
+                """SELECT * FROM model_metrics ORDER BY trained_at DESC LIMIT ?""",
                     (limit,)
                 )
                 return [dict(row) for row in cursor.fetchall()]
@@ -497,11 +502,11 @@ class DatabaseManager:
 
     @staticmethod
     def generate_run_id() -> str:
-        """Генерация уникального индентификатора запуска пайплайна"""
+        """run_YYYYMMDD_<6hex> - уникальный ID запуска"""
         return f"run_{datetime.now().strftime("%Y%m%d_%H%M%S")}_{uuid.uuid4().hex[:6]}"
 
     def get_database_stats(self) -> Dict[str, Any]:
-        """Общая статистика по базе данных"""
+        """Размеры таблиц + вес файла БД"""
         try:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
@@ -521,7 +526,7 @@ class DatabaseManager:
 
     @staticmethod
     def create_database_manager(logger=None):
-        """Фабрика для безопасного создания DatabaseManager с fallback"""
+        """Пробует создать DatabaseManager, при ошибке -> None"""
         if logger is None:
             logger = logging.getLogger(__name__)
         try:

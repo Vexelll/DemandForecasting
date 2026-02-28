@@ -2,9 +2,25 @@ from dash import dcc, html
 from datetime import datetime
 from .controls import create_controls
 
+# Единая конфигурация графиков Plotly (отключение лишних кнопок)
+GRAPH_CONFIG = {
+    "displayModeBar": True,
+    "displaylogo": False,
+    "modeBarButtonsToRemove": [
+        "select2d", "lasso2d", "autoScale2d", "toggleSpikelines"
+    ],
+    "toImageButtonOptions": {
+        "format": "png",
+        "filename": "forecast_chart",
+        "height": 600,
+        "width": 1200,
+        "scale": 2
+    }
+}
+
 
 def create_layout(data):
-    """Создание основного layout дашборда"""
+    """Header + controls + 4 графика + таблица + footer"""
     return html.Div([
         # Заголовок
         _create_header(),
@@ -13,6 +29,7 @@ def create_layout(data):
         dcc.Loading(
             id="loading-indicator",
             type="circle",
+            color="#667eea",
             children=[
                 # Контролы
                 create_controls(data),
@@ -28,22 +45,38 @@ def create_layout(data):
                 # Основные графики
                 html.Div([
                     html.Div([
-                        dcc.Graph(id="forecast-chart", config={"displayModeBar": True})
+                        dcc.Graph(
+                            id="forecast-chart",
+                            config=GRAPH_CONFIG,
+                            style={"height": "100%"}
+                        )
                     ], className="chart-container"),
 
                     html.Div([
-                        dcc.Graph(id="error-distribution", config={"displayModeBar": True})
+                        dcc.Graph(
+                            id="error-distribution",
+                            config=GRAPH_CONFIG,
+                            style={"height": "100%"}
+                        )
                     ], className="chart-container"),
                 ], className="charts-row"),
 
                 # Дополнительные графики
                 html.Div([
                     html.Div([
-                        dcc.Graph(id="store-comparison", config={"displayModeBar": True})
+                        dcc.Graph(
+                            id="store-comparison",
+                            config=GRAPH_CONFIG,
+                            style={"height": "100%"}
+                        )
                     ], className="chart-container"),
 
                     html.Div([
-                        dcc.Graph(id="feature-importance", config={"displayModeBar": True})
+                        dcc.Graph(
+                            id="feature-importance",
+                            config=GRAPH_CONFIG,
+                            style={"height": "100%"}
+                        )
                     ], className="chart-container"),
                 ], className="charts-row"),
 
@@ -64,17 +97,19 @@ def create_layout(data):
 
 
 def _create_header():
-    """Создание заголовка дашборда"""
+    """H1 + подзаголовок + иконки"""
     return html.Div([
         html.H1("Demand Forecasting Dashboard", className="main-title"),
-        html.P("Система прогнозирования спроса для розничной сети Rossmann",
-               className="subtitle"),
+        html.P(
+            "Система прогнозирования спроса для розничной сети Rossmann",
+            className="subtitle"
+        ),
         html.Hr(className="header-divider")
     ], className="header")
 
 
 def _create_footer():
-    """Создание футера дашборда"""
+    """Источник данных + время обновления + версия"""
     return html.Div([
         html.Hr(className="footer-divider"),
         html.P([

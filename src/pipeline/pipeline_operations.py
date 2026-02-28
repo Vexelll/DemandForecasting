@@ -7,11 +7,11 @@ from src.data.history_manager import SalesHistoryManager
 from src.database.database_manager import DatabaseManager
 from src.models.lgbm_model import LGBMModel
 from src.pipeline.etl_pipeline import ETLPipeline
-from config.settings import DATA_PATH
+from config.settings import DATA_PATH, get_model_config
 
 
 class PipelineOperations:
-    """Выполняет основные операции пайплайна прогнозирования"""
+    """Операции Airflow DAG - каждый метод = одна задача"""
 
     def __init__(self) -> None:
         self.logger = logging.getLogger(__name__)
@@ -19,13 +19,12 @@ class PipelineOperations:
         self.feature_engineer = FeatureEngineer()
         self.history_manager = SalesHistoryManager()
 
-        # Инициализация БД для логирования запусков
         self.db = DatabaseManager.create_database_manager()
         self.current_run_id = DatabaseManager.generate_run_id()
         self._run_started_at = datetime.now()
 
     def _log_to_db(self, dag_name: str, status: str, records_processed: int = 0, error_message: str = None, **metrics) -> None:
-        """Логирование результата операции в БД"""
+        """Пишет в pipeline_runs: run_id, статус, метрики, длительность"""
         if self.db is None:
             return
 
@@ -49,7 +48,7 @@ class PipelineOperations:
             self.logger.warning(f"Ошибка логирования в БД: {e}")
 
     def preprocess_data(self) -> bool:
-        """Загрузка, объединение и очистка данных"""
+        """train.csv + store.csv -> cleaned_data.csv"""
         try:
             data = self.preprocessor.load_and_merge_data(
                 DATA_PATH / "raw/train.csv",
@@ -57,11 +56,10 @@ class PipelineOperations:
             )
             cleaned = self.preprocessor.clean_data(data)
 
-            # Сохраняем очищенные данные
             cleaned_path = DATA_PATH / "processed/cleaned_data.csv"
             self.preprocessor.save_processed_data(cleaned, cleaned_path)
 
-            self.logger.info(f"Предобработка завершена: {len(cleaned)} записей -> {cleaned_path}")
+            self.logger.info(f"Очистка: {len(cleaned)} записей -> {cleaned_path}")
 
             self._log_to_db("preprocess_data", "success", records_processed=len(cleaned))
             return True
@@ -72,7 +70,7 @@ class PipelineOperations:
             return False
 
     def create_features(self) -> bool:
-        """Создание признаков из очищенных данных"""
+        """cleaned_data.csv -> final_dataset.csv c 60+ признаками"""
         try:
             cleaned_data = pd.read_csv(
                 DATA_PATH / "processed/cleaned_data.csv",
@@ -81,11 +79,10 @@ class PipelineOperations:
 
             final_data, features = self.feature_engineer.prepare_final_dataset(cleaned_data)
 
-            # Сохраняем финальный датасет
             output_path = DATA_PATH / "processed/final_dataset.csv"
             final_data.to_csv(output_path, index=False)
 
-            self.logger.info(f"Признаки созданы: {len(features)} признаков, {len(final_data)} записей -> {output_path}")
+            self.logger.info(f"Признаки готовы: {len(features)} шт, {len(final_data)} строк -> {output_path}")
 
             self._log_to_db("create_features", "success", records_processed=len(final_data))
             return True
@@ -96,7 +93,7 @@ class PipelineOperations:
             return False
 
     def train_model(self) -> bool:
-        """Обучение модели LightGBM"""
+        """Optuna optimize -> train final -> save model + metrics"""
         try:
             final_data = pd.read_csv(DATA_PATH / "processed/final_dataset.csv")
 
@@ -108,16 +105,17 @@ class PipelineOperations:
             metrics, _ = model.run_complete_training()
 
             if metrics is not None:
-                self.logger.info(f"Модель обучена. MAPE: {metrics.get("MAPE", "N/A")}")
+                mape_value = metrics.get("MAPE", "N/A")
+                self.logger.info(f"Модель обучена. MAPE: {mape_value}")
 
-                # Сохранение метрик в БД
                 if self.db is not None:
                     try:
+                        train_ratio = get_model_config().get("train_time_ratio", 0.8)
                         self.db.save_model_metrics(
                             metrics=metrics,
                             n_features=len(final_data.columns) - 1,
-                            n_train_samples=int(len(final_data) * 0.7),
-                            n_test_samples=int(len(final_data) * 0.3),
+                            n_train_samples=int(len(final_data) * train_ratio),
+                            n_test_samples=int(len(final_data) * (1 - train_ratio)),
                             best_params=model.best_params
                         )
                     except Exception as e:
@@ -142,7 +140,7 @@ class PipelineOperations:
             return False
 
     def make_predictions(self) -> bool:
-        """Генерация прогнозов через ETL-пайплайн"""
+        """Поднимает ETLPipeline, прогоняет predict, пишет в outputs/"""
         try:
             etl = ETLPipeline()
             results = etl.run_pipeline(
@@ -151,7 +149,7 @@ class PipelineOperations:
                 DATA_PATH / "outputs/predictions.csv"
             )
 
-            self.logger.info(f"Прогнозы сгенерированы: {len(results)} записей")
+            self.logger.info(f"Прогнозы: {len(results)} записей")
 
             self._log_to_db("make_predictions", "success", records_processed=len(results))
             return len(results) > 0
@@ -162,11 +160,10 @@ class PipelineOperations:
             return False
 
     def validate_predictions(self) -> bool:
-        """Валидация прогнозов: наличие данных, отсутствие NaN и отрицательных значений"""
+        """Проверяет predictions.csv: не пустой, нет NaN, нет отрицательных"""
         try:
             predictions = pd.read_csv(DATA_PATH / "outputs/predictions.csv")
 
-            # Простые проверки
             checks = {
                 "has_data": len(predictions) > 0,
                 "no_negative": (predictions["PredictedSales"] >= 0).all() if "PredictedSales" in predictions.columns else True,
@@ -177,7 +174,7 @@ class PipelineOperations:
             failed_checks = [name for name, passed in checks.items() if not passed]
 
             if all_passed:
-                self.logger.info(f"Валидация пройдена: {len(predictions)} прогнозов")
+                self.logger.info(f"Валидация ок: {len(predictions)} прогнозов")
             else:
                 self.logger.warning(f"Валидация не пройдена: {failed_checks}")
 
@@ -188,7 +185,7 @@ class PipelineOperations:
             return False
 
     def update_sales_history(self) -> bool:
-        """Обновление исторической базы продаж"""
+        """Добавляет cleaned_data в историю (БД + pickle)"""
         try:
             cleaned_data = pd.read_csv(
                 DATA_PATH / "processed/cleaned_data.csv",
@@ -199,10 +196,8 @@ class PipelineOperations:
                 self.logger.error("Ошибка: очищенные данные пусты")
                 return False
 
-            # Обновляем историю
             self.history_manager.update_history(cleaned_data)
 
-            # Логируем статистику
             stats = self.history_manager.get_history_stats()
             self.logger.info(f"История обновлена: {stats["total_records"]} записей, {stats["unique_stores"]} магазинов")
 

@@ -1,12 +1,13 @@
 import logging
 import warnings
+import yaml
 from pathlib import Path
+from typing import Any, Dict, List
+
 
 # Базовые пути
 PROJECT_ROOT = Path(__file__).parent.parent
-DATA_PATH = PROJECT_ROOT / "data"
-MODELS_PATH = PROJECT_ROOT / "models"
-REPORTS_PATH = PROJECT_ROOT / "reports"
+CONFIG_PATH = PROJECT_ROOT / "config" / "config.yaml"
 
 if not (PROJECT_ROOT / "config").is_dir():
     warnings.warn(
@@ -15,16 +16,117 @@ if not (PROJECT_ROOT / "config").is_dir():
         stacklevel=2
     )
 
+def _load_config() -> Dict[str, Any]:
+    """Читает config.yaml, возвращает dict или {}, если файла нет"""
+    if not CONFIG_PATH.exists():
+        warnings.warn(
+           f"Файл конфигурации не найден: {CONFIG_PATH}. Используются значения по умолчанию",
+           RuntimeWarning,
+           stacklevel=2
+        )
+        return {}
+
+    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+        config = yaml.safe_load(f)
+
+    if not isinstance(config, dict):
+        warnings.warn(
+            f"Некорректный формат config.yaml: ожидался словарь, получен {type(config).__name__}",
+            RuntimeWarning,
+            stacklevel=2
+        )
+        return {}
+
+    return config
+
+# Глобальный объект конфигурации
+_config = _load_config()
+
+# Пути проекта
+DATA_PATH = PROJECT_ROOT / _config.get("paths", {}).get("data", "data")
+MODELS_PATH = PROJECT_ROOT / _config.get("paths", {}).get("models", "models")
+REPORTS_PATH = PROJECT_ROOT / _config.get("paths", {}).get("reports", "reports")
+
+# Типизированный доступ к секциям конфигурации
+def get_config() -> Dict[str, Any]:
+    """Копия всего конфига"""
+    return _config.copy()
+
+def get_model_config() -> Dict[str, Any]:
+    """Секция model из config.yaml"""
+    return _config.get("model", {})
+
+def get_optimization_config() -> Dict[str, Any]:
+    """Секция optimization из config.yaml"""
+    return _config.get("optimization", {})
+
+def get_feature_config() -> Dict[str, Any]:
+    """Секция feature_engineering из config.yaml"""
+    return _config.get("feature_engineering", {})
+
+def get_pipeline_config() -> Dict[str, Any]:
+    """Секция pipeline из config.yaml"""
+    return _config.get("pipeline", {})
+
+def get_dashboard_config() -> Dict[str, Any]:
+    """Секция dashboard из config.yaml"""
+    return _config.get("dashboard", {})
+
+def get_reporting_config() -> Dict[str, Any]:
+    """Секция reporting из config.yaml"""
+    return _config.get("reporting", {})
+
+def get_logging_config() -> Dict[str, Any]:
+    """Секция logging из config.yaml"""
+    return _config.get("logging", {})
+
+def get_data_files_config() -> Dict[str, Any]:
+    """Секция data_files из config.yaml"""
+    return _config.get("data_files", {})
+
+def get_monitoring_config() -> Dict[str, Any]:
+    """Секция monitoring из config.yaml"""
+    return _config.get("monitoring", {})
+
+def get_database_config() -> Dict[str, Any]:
+    """Секция database из config.yaml"""
+    return _config.get("database", {})
+
+
+def resolve_data_path(section: str, key: str) -> Path:
+    """data_files.raw.train -> DATA_PATH/raw/train.csv"""
+    data_files = get_data_files_config()
+    relative = data_files.get(section, {}).get(key)
+    if relative is None:
+        raise KeyError(f"Путь не найден в конфигурации: data_files.{section}.{key}")
+    return DATA_PATH / relative
+
+def setup_logging() -> None:
+    """basicConfig из параметров config.yaml"""
+    log_cfg = get_logging_config()
+    level_name = log_cfg.get("level", "INFO")
+    log_format = log_cfg.get("format", "%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    date_format = log_cfg.get("date_format", "%Y-%m-%d %H:%M:%S")
+
+    logging.basicConfig(
+        level=getattr(logging, level_name, logging.INFO),
+        format=log_format,
+        datefmt=date_format
+    )
+
 logger = logging.getLogger(__name__)
 
-def all_stores_time_split(df, train_time_ratio=0.8):
-    """Разделение всех магазинов по времени (70% начальных данных -> train, 30% конечных -> test)"""
+def all_stores_time_split(df, train_time_ratio=None):
+    """Все магазины в обоих наборах, split по Year-Week (дефолт 80/20)"""
+    if train_time_ratio is None:
+            train_time_ratio = get_model_config().get("train_time_ratio", 0.8)
+
     if not 0.0 < train_time_ratio < 1.0:
         raise ValueError(f"train_time_ratio должен быть в диапазоне (0, 1), получено: {train_time_ratio}")
 
     df = df.sort_values(["Year", "Week", "Store"]).copy()
 
-    # Уникальные временные периоды (Year, Week) - монотонно возрастают
+    # Уникальные (Year, Week) пары - по ним делим, чтобы не разрезать неделю пополам
     all_time_points = (
         df[["Year", "Week"]]
         .drop_duplicates()
@@ -32,19 +134,16 @@ def all_stores_time_split(df, train_time_ratio=0.8):
         .reset_index(drop=True)
     )
 
-    # Определяем точку разделения между train и test
     split_index = int(len(all_time_points) * train_time_ratio)
     split_point = all_time_points.iloc[split_index]
     split_year = split_point["Year"]
     split_week = split_point["Week"]
 
-    # Создаем маску для train данных - все периоды до split_point включительно
     train_mask = (
         (df["Year"] < split_year) |
         ((df["Year"] == split_year) & (df["Week"] <= split_week))
     )
 
-    # Создаем маску для test данных - все периоды строго после split_point
     test_mask = (
         (df["Year"] > split_year) |
         ((df["Year"] == split_year) & (df["Week"] > split_week))

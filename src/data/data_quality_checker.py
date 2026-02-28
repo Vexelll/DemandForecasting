@@ -1,16 +1,17 @@
 import logging
 from datetime import datetime
 from typing import Dict, Any
-from config.settings import DATA_PATH, MODELS_PATH
+from config.settings import DATA_PATH, MODELS_PATH, get_model_config
 
 
 class DataQualityChecker:
-    """Проверяет наличие новых данных и необходимость переобучения модели"""
+    """Проверки для DAG: свежие ли данные, нужно ли переобучать"""
+
     def __init__(self) -> None:
         self.logger = logging.getLogger(__name__)
 
     def has_new_data(self) -> bool:
-        """Проверяет, есть ли новые данные для обработки"""
+        """Данные считаются новыми, если mtime = сегодня (простой алгоритм)"""
         train_path = DATA_PATH / "raw/train.csv"
 
         if not train_path.exists():
@@ -26,8 +27,9 @@ class DataQualityChecker:
         return is_new
 
     def needs_retraining(self) -> bool:
-        """Проверяет, нужно ли переобучать модель"""
-        model_path = MODELS_PATH / "lgbm_final_model.pkl"
+        """Если модели нет, или она старше 7 дней -> переобучаем"""
+        model_filename = get_model_config().get("model_filename", "lgbm_final_model.pkl")
+        model_path = MODELS_PATH / model_filename
         data_path = DATA_PATH / "processed/final_dataset.csv"
 
         # Если нет модели - нужно обучить
@@ -37,7 +39,7 @@ class DataQualityChecker:
 
         # Если нет данных - нельзя проверить, лучше переобучить
         if not data_path.exists():
-            self.logger.info("Данные не найдена - переобучение для безопасности")
+            self.logger.info("Данные не найдены - переобучение для безопасности")
             return True
 
         try:
@@ -56,11 +58,11 @@ class DataQualityChecker:
             return True
 
     def check_data_files(self) -> Dict[str, Dict[str, Any]]:
-        """Быстрая проверка наличия и размера всех ключевых файлов"""
+        """Проверяет, что train.csv, store.csv, модель на месте"""
         files_to_check = {
             "train.csv": DATA_PATH / "raw/train.csv",
             "store.csv": DATA_PATH / "raw/store.csv",
-            "model.pkl": MODELS_PATH / "lgbm_final_model.pkl",
+            "model.pkl": MODELS_PATH / get_model_config().get("model_filename", "lgbm_final_model.pkl"),
             "predictions.csv": DATA_PATH / "outputs/predictions.csv"
         }
 

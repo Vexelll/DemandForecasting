@@ -2,15 +2,10 @@ import logging
 import json
 import joblib
 import pandas as pd
-from config.settings import DATA_PATH, REPORTS_PATH
+from config.settings import DATA_PATH, REPORTS_PATH, setup_logging
 from src.database.database_manager import DatabaseManager
 
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
-)
 logger = logging.getLogger(__name__)
 
 
@@ -88,6 +83,8 @@ def migrate_model_metrics(db: DatabaseManager) -> None:
 
 def run_migration() -> None:
     """Запуск полной миграции существующих данных в БД"""
+    setup_logging()
+
     logger.info("=" * 60)
     logger.info("Начало миграции данных в реляционную БД")
     logger.info("=" * 60)

@@ -13,6 +13,7 @@ from airflow.providers.smtp.operators.smtp import EmailOperator
 from airflow.providers.standard.operators.empty import EmptyOperator
 from src.data.data_quality_checker import DataQualityChecker
 from src.pipeline.pipeline_operations import PipelineOperations
+from config.settings import get_pipeline_config
 
 dags_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, dags_dir)
@@ -24,41 +25,45 @@ class DemandForecastingPipeline:
         self._quality_checker = None
         self._operations = None
         self._monitor = None
+
+        # Загрузка параметров пайплайна из конфигурации
+        pipeline_cfg = get_pipeline_config()
+
         self.default_args = {
-            "owner": "data_engineering",
+            "owner": pipeline_cfg.get("owner", "data_engineering"),
             "depends_on_past": False,
-            "start_date": datetime(2024, 1, 1),
-            "email_on_failure": True,
-            "email_on_retry": False,
-            "retries": 2,
-            "retry_delay": timedelta(minutes=5),
-            "max_active_runs": 1
+            "start_date": datetime.strptime(pipeline_cfg.get("start_date", "2024-01-01"), "%Y-%m-%d"),
+            "email_on_failure": pipeline_cfg.get("email_on_failure", True),
+            "email_on_retry": pipeline_cfg.get("email_on_retry", False),
+            "retries": pipeline_cfg.get("retries", 2),
+            "retry_delay": timedelta(minutes=pipeline_cfg.get("retry_delay_minutes", 5)),
+            "max_active_runs": pipeline_cfg.get("max_active_runs", 1)
         }
         self.cleaned_data = None
 
     @property
     def quality_checker(self):
-        """Ленивая инициализация DataQualityChecker"""
+        """Lazy init - создается при первом обращении"""
         if self._quality_checker is None:
             self._quality_checker = DataQualityChecker()
         return self._quality_checker
 
     @property
     def operations(self):
-        """Ленивая инициализация PipelineOperations"""
+        """Lazy init - не создаем, если задача не дошла до его шага"""
         if self._operations is None:
             self._operations = PipelineOperations()
         return self._operations
 
     @property
     def monitor(self):
-        """Ленивая инициализация DAGMonitor"""
+        """Lazy init"""
         if self._monitor is None:
             self._monitor = DAGMonitor()
         return self._monitor
 
     def check_new_data(self) -> str:
-        """Проверка наличия новых данных"""
+        """Проверяет mtime train.csv"""
         self.logger.info("Проверка новых данных...")
 
         try:
@@ -73,7 +78,7 @@ class DemandForecastingPipeline:
             return "preprocess_data"
 
     def decide_retraining_path(self, **context) -> str:
-        """Принятие решения об переобучении модели"""
+        """Если модель устарела -> branch на retrain"""
         self.logger.info("Проверка необходимости переобучения...")
 
         try:
@@ -88,7 +93,7 @@ class DemandForecastingPipeline:
             return "retrain_model"
 
     def preprocess_data(self) -> str:
-        """Предобработка входных данных"""
+        """Задача: clean + merge"""
         self.logger.info("Запуск предобработки данных...")
 
         try:
@@ -101,7 +106,7 @@ class DemandForecastingPipeline:
             return "failure"
 
     def update_feature_store(self) -> str:
-        """Создание признаков (feature engineering)"""
+        """Задача: 60+ признаков"""
         self.logger.info("Создание признаков...")
 
         try:
@@ -114,7 +119,7 @@ class DemandForecastingPipeline:
             return "failure"
 
     def update_sales_history(self) -> str:
-        """Обновление истории продаж"""
+        """Задача: update history"""
         self.logger.info("Обновление истории продаж...")
 
         try:
@@ -132,7 +137,7 @@ class DemandForecastingPipeline:
             return "failure"
 
     def retrain_model(self) -> str:
-        """Обучение модели LightGBM"""
+        """Задача: Optuna + train"""
         self.logger.info("Обучение модели...")
 
         try:
@@ -145,12 +150,12 @@ class DemandForecastingPipeline:
             return "failure"
 
     def full_retrain_model(self) -> str:
-        """Полное переобучение модели (еженедельное)"""
+        """Еженедельно: preprocess -> features -> history -> train"""
         self.logger.info("Полное переобучение модели...")
         return self.retrain_model()
 
     def generate_predictions(self) -> str:
-        """Генерация прогнозов через ETL-пайплайн"""
+        """Задача: ETL predict"""
         self.logger.info("Генерация прогнозов...")
 
         try:
@@ -163,7 +168,7 @@ class DemandForecastingPipeline:
             return "failure"
 
     def validate_results(self) -> str:
-        """Валидация результатов прогнозирования"""
+        """Задача: проверка predictions.csv"""
         self.logger.info("Валидация результатов...")
 
         try:
@@ -179,19 +184,23 @@ class DemandForecastingPipeline:
             return "failure"
 
     def on_failure_callback(self, context: dict) -> None:
-        """callback обработки ошибок DAG"""
+        """on_failure_callback для всех задач"""
         error = context.get("exception")
         task_id = context.get("task_instance").task_id if context.get("task_instance") else "unknown"
 
         self.logger.error(f"Ошибка в задаче {task_id}: {error}")
 
     def create_dag(self) -> DAG:
-        """Создание основного DAG ежедневного прогнозирования"""
+        """Ежедневный DAG: check data -> predict -> validate"""
+        pipeline_cfg = get_pipeline_config()
+        schedules = pipeline_cfg.get("schedules", {})
+        timeouts = pipeline_cfg.get("execution_timeouts", {})
+
         with DAG(
             "demand_forecasting_pipeline",
             default_args=self.default_args,
             description="Автоматизированный пайплайн прогнозирования спроса",
-            schedule="0 2 * * *", # Ежедневно в 2:00
+            schedule=schedules.get("daily_forecast", "0 2 * * *"),
             max_active_runs=1,
             max_active_tasks=1,
             catchup=False,
@@ -234,7 +243,7 @@ class DemandForecastingPipeline:
                 task_id="retrain_model",
                 python_callable=self.retrain_model,
                 pool="ml_pool",
-                execution_timeout=timedelta(hours=3)
+                execution_timeout=timedelta(minutes=timeouts.get("retrain_model", 180))
             )
 
             # Пропуски
@@ -246,7 +255,7 @@ class DemandForecastingPipeline:
                 task_id="generate_predictions",
                 python_callable=self.generate_predictions,
                 trigger_rule="none_failed",
-                execution_timeout=timedelta(minutes=30),
+                execution_timeout=timedelta(minutes=timeouts.get("generate_predictions", 30)),
 
             )
 
@@ -283,12 +292,14 @@ class DemandForecastingPipeline:
             return dag
 
     def create_retraining_dag(self) -> DAG:
-        """Создание DAG еженедельного переобучения"""
+        """Еженедельный DAG: полный retrain + predict"""
+        schedules = get_pipeline_config().get("schedules", {})
+
         with DAG(
             "weekly_model_retraining",
             default_args=self.default_args,
             description="Еженедельное переобучение модели",
-            schedule="0 3 * * 0", # Воскресенье в 3:00
+            schedule=schedules.get("weekly_retraining", "0 3 * * 0"),
             catchup=False,
             tags=["retraining"]
         ) as dag:

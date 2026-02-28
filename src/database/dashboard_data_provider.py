@@ -7,16 +7,15 @@ from src.database.database_manager import DatabaseManager
 
 
 class DashboardDataProvider:
-    """Провайдер данных для дашборда прогнозирования спроса"""
+    """Читает прогнозы из БД для дашборда, fallback на демо-данные"""
+
     REQUIRED_PREDICTION_COLUMNS = ["Store", "Date", "PredictedSales", "ActualSales"]
 
     def __init__(self) -> None:
         self.logger = logging.getLogger(__name__)
 
-        # Инициализация подключения к БД
         self.db = DatabaseManager.create_database_manager()
 
-        # Определяем источник данных
         if self.db is not None:
             self.data_source = "database"
             self.logger.info("DashboardDataProvider: источник данных - SQLite БД")
@@ -25,29 +24,25 @@ class DashboardDataProvider:
             self.logger.warning("DashboardDataProvider: БД недоступна, данные из CSV не загружаются. Используются демо-данные")
 
     def load_predictions(self, run_id: Optional[str] = None) -> pd.DataFrame:
-        """Загрузка данных прогнозов для дашборда"""
+        """Последний run или конкретный run_id -> DataFrame для графиков"""
         if self.db is None:
             self.logger.warning("БД недоступна, возвращаются демо-данные")
             return self._create_demo_data()
 
         try:
-            # Загрузка из БД
             if run_id is not None:
                 data = self.db.get_predictions_by_run(run_id)
             else:
                 data = self.db.get_latest_predictions()
 
-            # Проверка результатов
             if data is None or len(data) == 0:
                 self.logger.warning("В БД нет прогнозов, возвращаются демо-данные")
                 return self._create_demo_data()
 
-            # Валидация структуры
             if not self._validate_predictions(data):
                 self.logger.warning("Данные из БД не прошли валидацию, демо-данные")
                 return self._create_demo_data()
 
-            # Дополнение рассчитываемых колонок (если отсутствуют)
             data = self._enrich_predictions(data)
 
             self.logger.info(f"Прогнозы загружены из БД: {len(data)} записей, {data["Store"].nunique()} магазинов")
@@ -58,7 +53,7 @@ class DashboardDataProvider:
             return self._create_demo_data()
 
     def load_predictions_for_comparison(self, run_id_1: str, run_id_2: str) -> pd.DataFrame:
-        """Загрузка данных для сравнения двух запусков прогнозирования"""
+        """Два run_id -> merge по Store+Date -> дельта прогнозов"""
         if self.db is None:
             self.logger.warning("БД недоступна, сравнение невозможно")
             return pd.DataFrame()
@@ -71,7 +66,6 @@ class DashboardDataProvider:
                 self.logger.warning("Один из запусков не содержит данных")
                 return pd.DataFrame()
 
-            # Объединение по Store + Date
             comparison = pd.merge(
                 pred_1[["Store", "Date", "PredictedSales", "ActualSales"]],
                 pred_2[["Store", "Date", "PredictedSales"]],
@@ -80,7 +74,6 @@ class DashboardDataProvider:
                 suffixes=("_v1", "_v2")
             )
 
-            # Дельта прогнозов
             comparison["PredictionDelta"] = (comparison["PredictedSales_v2"] - comparison["PredictedSales_v1"])
             comparison["DeltaPct"] = np.where(comparison["PredictedSales_v1"] > 0, (comparison["PredictionDelta"] / comparison["PredictedSales_v1"]) * 100, 0.0)
 
@@ -92,7 +85,7 @@ class DashboardDataProvider:
             return pd.DataFrame()
 
     def get_available_runs(self, limit: int = 20) -> List[Dict[str, Any]]:
-        """Получение списка доступных запусков прогнозирования"""
+        """Список run_id с мета: записи, даты, avg mape"""
         if self.db is None:
             return []
 
@@ -103,7 +96,7 @@ class DashboardDataProvider:
             return []
 
     def get_pipeline_history(self, limit: int = 20) -> List[Dict[str, Any]]:
-        """Получение истории запусков пайплайна"""
+        """pipeline_runs для вкладки мониторинга"""
         if self.db is None:
             return []
 
@@ -114,7 +107,7 @@ class DashboardDataProvider:
             return []
 
     def get_model_metrics_trend(self, limit: int = 20) -> List[Dict[str, Any]]:
-        """Получение тренда метрик модели"""
+        """mape/rmse по обучениям для графиков тренда"""
         if self.db is None:
             return []
 
@@ -125,7 +118,7 @@ class DashboardDataProvider:
             return []
 
     def get_data_source_info(self) -> Dict[str, Any]:
-        """Информация об источнике данных для отображения в footer"""
+        """Для футера: источник, размер БД, кол-во записей"""
         info = {
             "source": self.data_source,
             "timestamp": datetime.now().isoformat()
@@ -147,7 +140,7 @@ class DashboardDataProvider:
         return info
 
     def _validate_predictions(self, data: pd.DataFrame) -> bool:
-        """Валидация структуры данных прогнозов"""
+        """Проверяет, что Store, Date, PredictedSales, ActualSales есть"""
         missing = [col for col in self.REQUIRED_PREDICTION_COLUMNS if col not in data.columns]
 
         if missing:
@@ -160,10 +153,9 @@ class DashboardDataProvider:
         return True
 
     def _enrich_predictions(self, data: pd.DataFrame) -> pd.DataFrame:
-        """Дополнение рассчитываемых колонок (AbsoluteError, PercentageError)"""
+        """Досчитывает AbsoluteError и PercentageError, если их нет"""
         df = data.copy()
 
-        # Приведение даты к datetime
         if "Date" in df.columns and not pd.api.types.is_datetime64_any_dtype(df["Date"]):
             df["Date"] = pd.to_datetime(df["Date"])
 
@@ -180,7 +172,7 @@ class DashboardDataProvider:
         return df
 
     def _create_demo_data(self) -> pd.DataFrame:
-        """Генерация демо-данных для тестирования дашборда"""
+        """Синтетика для тестирования дашборда, когда БД пуста"""
         self.logger.info("Генерация демо-данных для дашборда")
 
         dates = pd.date_range(start="2024-01-01", end="2024-03-31", freq="D")

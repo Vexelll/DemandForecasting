@@ -231,6 +231,7 @@ class AirflowRunner:
         directories_to_sync = [
             ("src", f"{self.wsl_project_root}/src", "**/*.py"),
             ("config", f"{self.wsl_project_root}/config", "**/*.py"),
+            ("config", f"{self.wsl_project_root}/config", "**/*.yml"),
             ("airflow/dags/monitoring", f"{self.wsl_airflow_home}/dags/monitoring", "**/*.py")
         ]
 
