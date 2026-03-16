@@ -1,20 +1,24 @@
-import dash
-from dash import Dash, Input, Output, dcc
-import pandas as pd
 import logging
 from datetime import datetime, timedelta
-from components.layout import create_layout
-from components.metrics import calculate_metrics, create_metric_cards
+
+import dash
+import pandas as pd
+from dash import Dash, Input, Output, dcc
+
 from components.charts import (
+    create_data_table,
+    create_empty_chart,
+    create_feature_importance_chart,
     create_forecast_chart,
     create_error_distribution,
-    create_store_comparison,
-    create_feature_importance_chart,
-    create_empty_chart,
-    create_data_table
+    create_metrics_trend_chart,
+    create_pipeline_runs_table,
+    create_store_comparison
 )
-from src.database.dashboard_data_provider import DashboardDataProvider
+from components.layout import create_layout
+from components.metrics import calculate_metrics, create_metric_cards
 from config.settings import get_dashboard_config, setup_logging
+from src.database.dashboard_data_provider import DashboardDataProvider
 
 class ForecastingDashboard:
     # Минимальный интервал между обновлениями данных (секунды)
@@ -37,18 +41,19 @@ class ForecastingDashboard:
         """Timestamp последнего обновления (для footer)"""
         return self._last_update_time
 
-    def set_last_update_time(self, timestamp: datetime = None) -> None:
+    def set_last_update_time(self, timestamp: datetime | None = None) -> None:
         """Ставит timestamp = now"""
         if timestamp is None:
             timestamp = datetime.now()
         self._last_update_time = timestamp
 
     def _setup_layout(self) -> None:
-        """Собирает layout из controls + charts + footer"""
-        self.app.layout = create_layout(self.data)
+        """Собирает layout из controls + charts + мониторинг + footer"""
+        available_runs = self.data_provider.get_available_runs()
+        self.app.layout = create_layout(self.data, available_runs=available_runs)
         self.logger.debug("Layout дашборда настроен")
 
-    def _filter_data(self, selected_store: int, start_date, end_date, period_preset: str) -> pd.DataFrame:
+    def _filter_data(self, selected_store: int, start_date: str | None, end_date: str | None, period_preset: str) -> pd.DataFrame:
         """DataFrame -> subset по Store + Date range"""
         # Обработка period_preset для автоматической установки дат
         if period_preset and period_preset != "custom":
@@ -83,7 +88,7 @@ class ForecastingDashboard:
         return self.data.loc[mask]
 
     def _setup_callbacks(self) -> None:
-        """Регистрация Dash callbacks: фильтры -> графики"""
+        """Регистрация Dash callbacks: фильтры -> графики + мониторинг"""
 
         @self.app.callback(
             [Output("mape-metric", "children"),
@@ -94,35 +99,49 @@ class ForecastingDashboard:
              Output("error-distribution", "figure"),
              Output("store-comparison", "figure"),
              Output("feature-importance", "figure"),
+             Output("metrics-trend", "figure"),
+             Output("pipeline-runs-table", "children"),
              Output("data-table", "children"),
              Output("last-update-text", "children")],
             [Input("store-selector", "value"),
+             Input("run-selector", "value"),
              Input("date-range", "start_date"),
              Input("date-range", "end_date"),
              Input("period-preset", "value"),
              Input("refresh-btn", "n_clicks")],
             prevent_initial_call=False
         )
-        def update_dashboard(selected_store, start_date, end_date, period_preset, n_clicks):
-            """Главный callback: пересчет всех графиков и метрик"""
+        def update_dashboard(selected_store, selected_run, start_date, end_date, period_preset, n_clicks):
+            """Главный callback: пересчет всех графиков, метрик и мониторинга"""
             ctx = dash.callback_context
+            trigger_id = ctx.triggered[0]["prop_id"].split(".")[0] if ctx.triggered else ""
 
-            # Проверяем, что событие пришло именно от кнопки обновления
-            if ctx.triggered:
-                trigger_id = ctx.triggered[0]["prop_id"].split(".")[0]
+            # Перезагрузка данных: по кнопке или при смене запуска
+            if trigger_id == "refresh-btn":
+                current_time = datetime.now()
+                last_update = self.get_last_update_time()
+                elapsed = (current_time - last_update).total_seconds()
 
-                if trigger_id == "refresh-btn":
-                    current_time = datetime.now()
-                    last_update = self.get_last_update_time()
-                    elapsed = (current_time - last_update).total_seconds()
+                if elapsed >= self.REFRESH_COOLDOWN_SECONDS:
+                    run_id = None if selected_run == "latest" else selected_run
+                    self.data = self.data_provider.load_predictions(run_id=run_id)
+                    self.set_last_update_time(current_time)
+                    self.logger.info(f"Данные обновлены. Записей: {len(self.data)}")
+                else:
+                    self.logger.debug(f"Слишком частая перезагрузка данных (прошло {elapsed:.1f}c < {self.REFRESH_COOLDOWN_SECONDS}c)")
 
-                    # Не чаще чем раз в REFRESH_COOLDOWN_SECONDS
-                    if elapsed < self.REFRESH_COOLDOWN_SECONDS:
-                        self.logger.debug(f"Слишком частая перезагрузка данных (прошло {elapsed:.1f}с < {self.REFRESH_COOLDOWN_SECONDS}с)")
-                    else:
-                        self.data = self.data_provider.load_predictions()
-                        self.set_last_update_time(current_time)
-                        self.logger.info(f"Данные обновлены. Записей: {len(self.data)}")
+            elif trigger_id == "run-selector":
+                run_id = None if selected_run == "latest" else selected_run
+                self.data = self.data_provider.load_predictions(run_id=run_id)
+                self.set_last_update_time()
+                self.logger.info(f"Загружен запуск: {selected_run}, записей: {len(self.data)}")
+
+            # Мониторинг пайплайна
+            metrics_history = self.data_provider.get_model_metrics_trend()
+            pipeline_runs = self.data_provider.get_pipeline_history()
+            trend_fig = create_metrics_trend_chart(metrics_history)
+            runs_fig = create_pipeline_runs_table(pipeline_runs)
+            runs_component = dcc.Graph(figure=runs_fig, config={"displayModeBar": False})
 
             # Фильтрация данных
             filtered_data = self._filter_data(
@@ -139,7 +158,7 @@ class ForecastingDashboard:
                 return [
                     default_card, default_card, default_card, default_card,
                     empty_fig, empty_fig, empty_fig, empty_fig,
-                    "", last_update
+                    trend_fig, runs_component, "", last_update
                 ]
 
             # Расчёт метрик
@@ -156,19 +175,17 @@ class ForecastingDashboard:
             store_fig = create_store_comparison(self.data, selected_store, start_dt, end_dt)
             feature_fig = create_feature_importance_chart()
 
-            # Таблица данных (возвращаем как dcc.Graph - children для data-table)
+            # Таблица данных
             table_fig = create_data_table(filtered_data)
-            table_component = dcc.Graph(
-                figure=table_fig,
-                config={"displayModeBar": False}
-            )
+            table_component = dcc.Graph(figure=table_fig, config={"displayModeBar": False})
 
             last_update_str = self._format_last_update()
 
             return [
                 metric_cards[0], metric_cards[1], metric_cards[2], metric_cards[3],
-                forecast_fig, error_fig, store_fig, feature_fig, table_component,
-                last_update_str
+                forecast_fig, error_fig, store_fig, feature_fig,
+                trend_fig, runs_component,
+                table_component, last_update_str
             ]
 
         self.logger.debug("Callbacks дашборда настроены")
@@ -189,6 +206,7 @@ class ForecastingDashboard:
 
         source_info = self.data_provider.get_data_source_info()
         self.logger.info(f"Дашборд доступен по адресу http://localhost:{port}")
+        self.logger.info(f"Источник: {source_info["source"]}, БД: {source_info.get("db_size_mb", 0)} мб, прогнозов: {source_info.get("predictions_count", 0)}")
         self.logger.info(f"Используемые данные: магазинов={self.data["Store"].nunique()}, диапазон={self.data["Date"].min()} — {self.data["Date"].max()}, записей={len(self.data)}")
         self.app.run(debug=debug, port=port)
 

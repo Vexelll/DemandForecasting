@@ -1,9 +1,10 @@
-from dash import dcc, html
 from datetime import datetime, timedelta
 
+from dash import dcc, html
 
-def create_controls(data):
-    """Dropdown магазинов + DatePicker + кнопка обновления"""
+
+def create_controls(data, available_runs=None):
+    """Dropdown магазинов + запусков + DatePicker + кнопка обновления"""
     if len(data) == 0:
         store_options = [{"label": "Нет данных", "value": 0}]
         min_date = max_date = datetime.now().date()
@@ -24,6 +25,19 @@ def create_controls(data):
         {"label": "Произвольный", "value": "custom"}
     ]
 
+    # Список запусков для выбора конкретного прогноза
+    run_options = [{"label": "Последний запуск", "value": "latest"}]
+    if available_runs:
+        for run in available_runs:
+            run_id = run.get("run_id", "")
+            records = run.get("records", 0)
+            avg_mape = run.get("avg_mape")
+            mape_str = f"MAPE: {avg_mape:.1f}%" if avg_mape else ""
+            run_options.append({
+                "label": f"{run_id} ({records} записей, {mape_str})",
+                "value": run_id
+            })
+
     return html.Div([
         html.Div([
             # Выбор магазина
@@ -37,6 +51,18 @@ def create_controls(data):
                     className="store-dropdown",
                     placeholder="Выберите магазин...",
                     searchable=True
+                )
+            ], className="control-group"),
+
+            # Выбор запуска прогноза
+            html.Div([
+                html.Label("Запуск прогноза:", className="control-label"),
+                dcc.Dropdown(
+                    id="run-selector",
+                    options=run_options,
+                    value="latest",
+                    clearable=False,
+                    className="run-dropdown"
                 )
             ], className="control-group"),
 

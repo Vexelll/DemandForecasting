@@ -26,14 +26,13 @@ class LGBMModel(BaseModels):
         model_cfg = get_model_config()
         self.best_n_estimators: int = model_cfg.get("n_estimators_max", 5000)
 
+        self._device_params = self._detect_device()
+        self.logger.info(f"Устройство: {self._device_params.get("device", "cpu")}")
+
     @staticmethod
     def _build_time_key(X: pd.DataFrame) -> pd.Series:
-        """Year+Week -> datetime по ISO, для корректного TimeSeriesSplit"""
-        time_key = pd.to_datetime(
-            X["Year"].astype(str) + "-W" + X["Week"].astype(str).str.zfill(2) + "-1",
-            format="%G-W%V-%u"
-        )
-        return time_key
+        """ISOYear * 100 + Week -> числовой ключ для TimeSeriesSplit"""
+        return X["ISOYear"] * 100 + X["Week"]
 
     @staticmethod
     def _detect_device() -> Dict[str, Any]:
@@ -73,7 +72,7 @@ class LGBMModel(BaseModels):
         ss = model_cfg.get("search_space", {})
         cv_cfg = model_cfg.get("cv", {})
 
-        device_params = self._detect_device()
+        device_params = self._device_params
 
         params = {
             "objective": "regression",
@@ -81,19 +80,19 @@ class LGBMModel(BaseModels):
             "verbosity": -1,
             "boosting_type": "gbdt",
             **device_params,
-            "lambda_l1": trial.suggest_float("lambda_l1", *ss.get("lambda_l1", [0.1, 0.50]), log=True),
-            "lambda_l2": trial.suggest_float("lambda_l2", *ss.get("lambda_l2", [0.1, 0.50]), log=True),
+            "lambda_l1": trial.suggest_float("lambda_l1", *ss.get("lambda_l1", [1e-8, 10.0]), log=True),
+            "lambda_l2": trial.suggest_float("lambda_l2", *ss.get("lambda_l2", [1e-8, 10.0]), log=True),
             "num_leaves": trial.suggest_int("num_leaves", *ss.get("num_leaves", [31, 255])),
             "max_depth": trial.suggest_int("max_depth", *ss.get("max_depth", [4, 15])),
             "min_data_in_leaf": trial.suggest_int("min_data_in_leaf", *ss.get("min_data_in_leaf", [50, 500])),
             "feature_fraction": trial.suggest_float("feature_fraction", *ss.get("feature_fraction", [0.4, 0.95])),
             "bagging_fraction": trial.suggest_float("bagging_fraction", *ss.get("bagging_fraction", [0.4, 0.95])),
             "bagging_freq": trial.suggest_int("bagging_freq", *ss.get("bagging_freq", [1, 7])),
-            "min_child_weight": trial.suggest_float("min_child_weight", *ss.get("min_child_weight", [1e-5, 10.0]), log=True),
-            "learning_rate": trial.suggest_float("learning_rate", *ss.get("learning_rate", [0.005, 0.3]), log=True),
-            "max_bin": trial.suggest_int("max_bin", *ss.get("max_bin", [200, 255])),
+            "min_child_weight": trial.suggest_float("min_child_weight", *ss.get("min_child_weight", [0.001, 10.0]), log=True),
+            "learning_rate": trial.suggest_float("learning_rate", *ss.get("learning_rate", [0.01, 0.3]), log=True),
+            "max_bin": trial.suggest_int("max_bin", *ss.get("max_bin", [63, 255])),
             "extra_trees": trial.suggest_categorical("extra_trees", [True, False]),
-            "path_smooth": trial.suggest_float("path_smooth", *ss.get("path_smooth", [1.0, 50.0])),
+            "path_smooth": trial.suggest_float("path_smooth", *ss.get("path_smooth", [0.0, 20.0])),
             "random_state": model_cfg.get("random_state", 42)
         }
 
@@ -133,7 +132,8 @@ class LGBMModel(BaseModels):
             )
 
             y_pred = model.predict(X_fold_val)
-            mape = np.mean(np.abs((y_fold_val - y_pred) / np.maximum(y_fold_val, 1))) * 100
+            fold_metrics = self.calculate_metrics(y_fold_val, y_pred)
+            mape = fold_metrics["MAPE"]
             scores.append(mape)
             best_iterations.append(model.best_iteration_)
 
@@ -178,7 +178,7 @@ class LGBMModel(BaseModels):
         self.best_params = self.study.best_params
         self.best_n_estimators = self.study.best_trial.user_attrs.get("best_n_estimators", n_estimators_max)
 
-        device_params = self._detect_device()
+        device_params = self._device_params
 
         self.best_params.update(
             {
@@ -212,23 +212,34 @@ class LGBMModel(BaseModels):
         model_cfg = get_model_config()
         report_cfg = get_reporting_config()
         early_stopping_rounds = model_cfg.get("early_stopping_rounds", 500)
+        val_ratio = model_cfg.get("val_ratio", 0.15)
         top_n = report_cfg.get("feature_importance_top_n", 20)
 
         if self.best_params is None:
+            self.logger.warning("Параметры не заданы, запускается оптимизация (может занять время)")
             self.best_params = self.optimize_hyperparameters(X_train, y_train)
 
-        self.logger.info(f"Train: {len(X_train)} строк, Test (eval): {len(X_test)} строк")
+        val_size = int(len(X_train) * val_ratio)
+        X_fit, X_val = X_train.iloc[:-val_size], X_train.iloc[-val_size:]
+        y_fit, y_val = y_train.iloc[:-val_size], y_train.iloc[-val_size:]
 
-        self.model = lgb.LGBMRegressor(**self.best_params)
+        self.logger.info(f"Fit: {len(X_fit)} строк, Val (early stop): {len(X_val)} строк, Test (оценка): {len(X_test)} строк")
+
+        train_params = self.best_params.copy()
+        train_params["n_estimators"] = model_cfg.get("n_estimators_max", 5000)
+
+        self.model = lgb.LGBMRegressor(**train_params)
         self.model.fit(
-            X_train, y_train,
-            eval_set=[(X_test, y_test)],
+            X_fit, y_fit,
+            eval_set=[(X_val, y_val)],
             eval_metric="mape",
             callbacks=[
                 lgb.early_stopping(early_stopping_rounds, verbose=True),
                 lgb.log_evaluation(200)
             ]
         )
+
+        self.logger.info(f"Early stopping на итерации {self.model.best_iteration_}")
 
         y_pred = self.model.predict(X_test)
         metrics = self.calculate_metrics(y_test, y_pred)
@@ -251,6 +262,9 @@ class LGBMModel(BaseModels):
             model_cfg = get_model_config()
             report_files = get_reporting_config().get("output_files", {})
 
+            MODELS_PATH.mkdir(parents=True, exist_ok=True)
+            REPORTS_PATH.mkdir(parents=True, exist_ok=True)
+
             model_path = MODELS_PATH / model_cfg.get("model_filename", "lgbm_final_model.pkl")
             joblib.dump(self.model, model_path)
 
@@ -263,20 +277,8 @@ class LGBMModel(BaseModels):
             predictions_df.to_csv(predictions_path, index=False)
 
             params_path = REPORTS_PATH / report_files.get("lgbm_best_params", "lgbm_best_params.json")
-
-            serializable_params = {}
-            for key, value in self.best_params.items():
-                if isinstance(value, (np.integer,)):
-                    serializable_params[key] = int(value)
-                elif isinstance(value, (np.floating,)):
-                    serializable_params[key] = float(value)
-                elif isinstance(value, np.bool_):
-                    serializable_params[key] = bool(value)
-                else:
-                    serializable_params[key] = value
-
             with open(params_path, "w", encoding="utf-8") as f:
-                json.dump(serializable_params, f, indent=2, ensure_ascii=False)
+                json.dump(self._to_serializable(self.best_params), f, indent=2, ensure_ascii=False)
 
             self.logger.info("Модель и метрики сохранены:")
             self.logger.info(f"- Модель: {model_path}")
@@ -287,7 +289,7 @@ class LGBMModel(BaseModels):
             self.logger.error(f"Ошибка сохранения модели и метрик: {e}")
             raise
 
-    def run_complete_training(self, data_path: Optional[Path] = None, train_time_ratio: Optional[float] = None) -> Tuple[Dict[str, float], np.ndarray]:
+    def run_complete_training(self, data_path: Optional[Path] = None, train_time_ratio: Optional[float] = None) -> Tuple[Dict[str, float], np.ndarray, pd.Series]:
         """Загрузка csv -> optimize -> train -> save, все за один вызов"""
         try:
             if data_path is None:
@@ -313,7 +315,7 @@ class LGBMModel(BaseModels):
             metrics, predictions = self.train_final_model(X_train, X_test, y_train, y_test)
 
             self.logger.info("Обучение завершено")
-            return metrics, predictions
+            return metrics, predictions, y_test
 
         except Exception as e:
             self.logger.error(f"Ошибка выполнения полного цикла обучения: {e}")
@@ -339,7 +341,6 @@ class LGBMModel(BaseModels):
 
         return self.model.predict(X)
 
-
 def main():
     setup_logging()
     logger = logging.getLogger(__name__)
@@ -347,15 +348,15 @@ def main():
         logger.info("Запуск обучения LightGBM...")
 
         lgbm_model = LGBMModel()
-        metrics, predictions = lgbm_model.run_complete_training()
+        metrics, predictions, y_test= lgbm_model.run_complete_training()
 
         logger.info(f"Финальные метрики - MAPE: {metrics["MAPE"]:.2f}%, MAE: {metrics["MAE"]:.2f}, RMSE: {metrics["RMSE"]:.2f}")
 
-        return metrics, predictions
+        return metrics, predictions, y_test
 
     except Exception as e:
         logger.error(f"Критическая ошибка в обучении LightGBM модели: {e}")
-        return None, None
+        return None, None, None
 
 
 if __name__ == "__main__":

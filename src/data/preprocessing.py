@@ -1,10 +1,11 @@
-import pandas as pd
-import numpy as np
 import logging
 from pathlib import Path
-from typing import Dict, Any
-from config.settings import DATA_PATH, setup_logging
+from typing import Dict, Any, List
 
+import numpy as np
+import pandas as pd
+
+from config.settings import DATA_PATH, setup_logging
 
 class DataPreprocessor:
     """Загрузка train/store csv, очистка (дубли, выбросы, закрытые дни) и приведение типов"""
@@ -56,7 +57,7 @@ class DataPreprocessor:
 
         return merged_data
 
-    def _validate_dataframe_columns(self, df: pd.DataFrame, required_columns: list[str], data_type: str) -> None:
+    def _validate_dataframe_columns(self, df: pd.DataFrame, required_columns: List[str], data_type: str) -> None:
         """Проверяем, что нужные колонки есть, иначе ValueError"""
         missing_columns = [col for col in required_columns if col not in df.columns]
         if missing_columns:
@@ -78,7 +79,10 @@ class DataPreprocessor:
             if col in df.columns:
                 # Int64 вместо int - поддерживает NaN без падения
                 if df[col].notna().all():
-                    df[col] = df[col].astype(int)
+                    if (df[col] == df[col].astype(int)).all():
+                        df[col] = df[col].astype(int)
+                    else:
+                        self.logger.warning(f"{col} содержит дробные значения, оставлен float")
                 else:
                     df[col] = df[col].astype("Int64")
 
@@ -90,7 +94,7 @@ class DataPreprocessor:
     def _remove_duplicates(self, df: pd.DataFrame) -> pd.DataFrame:
         """Store + Date должны быть уникальны, иначе лаги поедут"""
         before_count = len(df)
-        df = df.drop_duplicates(subset=["Store", "Date"], keep="last")
+        df = df.sort_values(["Store", "Date"]).drop_duplicates(subset=["Store", "Date"], keep="last")
 
         removed = before_count - len(df)
         if removed > 0:
@@ -98,12 +102,8 @@ class DataPreprocessor:
 
         return df
 
-    def _detect_outliers(self, df: pd.DataFrame, column: str = "Sales", method: str = "iqr", threshold: float = 3.0) -> pd.Series:
-        """IQR или z-score детекция, возвращает bool маску"""
-        if column not in df.columns:
-            self.logger.warning(f"Колонка {column} не найдена")
-            return pd.Series([False] * len(df), index=df.index)
-
+    def _detect_outliers_single(self, df: pd.DataFrame, column: str, method: str, threshold: float) -> pd.Series:
+        """IQR или z-score расчёт для одной подвыборки -> bool маска"""
         if method == "iqr":
             Q1 = df[column].quantile(0.25)
             Q3 = df[column].quantile(0.75)
@@ -131,7 +131,38 @@ class DataPreprocessor:
             self.logger.debug(f"z-score: mean={mean:.2f}, std={std:.2f}, порог={threshold}")
 
         else:
-            raise ValueError(f"Неизвестный метод: {method}. Используйте 'iqr' или 'zscore")
+            raise ValueError(f"Неизвестный метод: {method}. Используйте 'iqr' или 'zscore'")
+
+        return outliers.fillna(False)
+
+    def _detect_outliers(self, df: pd.DataFrame, column: str = "Sales", method: str = "iqr", threshold: float = 3.0) -> pd.Series:
+        """Выбросы по IQR/z-score, пороги отдельно для промо и обычных дней"""
+        if column not in df.columns:
+            self.logger.warning(f"Колонка {column} не найдена")
+            return pd.Series([False] * len(df), index=df.index)
+
+        # Promo есть - пороги раздельно, иначе промо-пики улетят в выбросы
+        if "Promo" in df.columns and df["Promo"].nunique() > 1:
+            outliers = pd.Series(False, index=df.index)
+
+            promo_mask = df["Promo"] == 1
+            normal_mask = df["Promo"] == 0
+
+            if promo_mask.any():
+                outliers.loc[promo_mask] = self._detect_outliers_single(
+                    df[promo_mask], column, method, threshold
+                )
+                self.logger.debug(f"Промо-дни: проверено {promo_mask.sum()} записей")
+
+            if normal_mask.any():
+                outliers.loc[normal_mask] = self._detect_outliers_single(
+                    df[normal_mask], column, method, threshold
+                )
+                self.logger.debug(f"Обычные дни: проверено {normal_mask.sum()} записей")
+
+        else:
+            # Нет колонки Promo или одно значение - общий расчёт
+            outliers = self._detect_outliers_single(df, column, method, threshold)
 
         outlier_count = outliers.sum()
         if outlier_count > 0:
@@ -147,6 +178,7 @@ class DataPreprocessor:
         cleaned_df = df.copy()
         cleaned_df = self._validate_data_types(cleaned_df)
         cleaned_df = self._remove_duplicates(cleaned_df)
+        cleaned_df = self._process_dates(cleaned_df)
 
         # Закрытые магазины: Sales всегда 0, для обучения бесполезны
         if "Open" in cleaned_df.columns:
@@ -158,8 +190,6 @@ class DataPreprocessor:
         before_sales = len(cleaned_df)
         cleaned_df = cleaned_df[(cleaned_df["Sales"] > 0) & (cleaned_df["Sales"].notna())]
         self.logger.debug(f"Невалидные Sales: -{before_sales - len(cleaned_df)} записей")
-
-        cleaned_df = self._process_dates(cleaned_df)
 
         if remove_outliers:
             outlier_mask = self._detect_outliers(
@@ -208,20 +238,20 @@ class DataPreprocessor:
 
         stats = {
             "total_records": len(df),
-            "outliers_count": outlier_mask.sum(),
-            "outliers_percentage": (outlier_mask.sum() / len(df)) * 100 if len(df) > 0 else 0,
+            "outliers_count": int(outlier_mask.sum()),
+            "outliers_percentage": float((outlier_mask.sum() / len(df)) * 100) if len(df) > 0 else 0,
             "method": method,
             "threshold": threshold,
             "normal_stats": {
-                "min": normal.min() if len(normal) > 0 else None,
-                "max": normal.max() if len(normal) > 0 else None,
-                "mean": normal.mean() if len(normal) > 0 else None,
-                "median": normal.median() if len(normal) > 0 else None
+                "min": float(normal.min()) if len(normal) > 0 else None,
+                "max": float(normal.max()) if len(normal) > 0 else None,
+                "mean": float(normal.mean()) if len(normal) > 0 else None,
+                "median": float(normal.median()) if len(normal) > 0 else None
             },
             "outlier_stats": {
-                "min": outliers.min() if len(outliers) > 0 else None,
-                "max": outliers.max() if len(outliers) > 0 else None,
-                "mean": outliers.mean() if len(outliers) > 0 else None
+                "min": float(outliers.min()) if len(outliers) > 0 else None,
+                "max": float(outliers.max()) if len(outliers) > 0 else None,
+                "mean": float(outliers.mean()) if len(outliers) > 0 else None
             }
         }
 
@@ -231,7 +261,7 @@ class DataPreprocessor:
         """Дамп в csv, создает директорию, если нет"""
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            df.to_csv(path, index=False)
+            df.to_csv(path, index=False, date_format="%Y-%m-%d")
             self.logger.info(f"Сохранено: {path} ({len(df)} записей)")
         except Exception as e:
             raise IOError(f"Не удалось сохранить данные в {path}: {e}") from e

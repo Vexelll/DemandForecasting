@@ -1,14 +1,16 @@
-import pandas as pd
-import joblib
-import numpy as np
 import logging
 from pathlib import Path
 from typing import Tuple, Optional, List
-from src.data.preprocessing import DataPreprocessor
-from src.features.feature_engineering import FeatureEngineer
-from src.data.history_manager import SalesHistoryManager
-from src.database.database_manager import DatabaseManager
+
+import joblib
+import numpy as np
+import pandas as pd
+
 from config.settings import MODELS_PATH, DATA_PATH, get_model_config, get_feature_config, setup_logging
+from src.data.history_manager import SalesHistoryManager
+from src.data.preprocessing import DataPreprocessor
+from src.database.database_manager import DatabaseManager
+from src.features.feature_engineering import FeatureEngineer
 
 class ETLPipeline:
 
@@ -91,9 +93,7 @@ class ETLPipeline:
 
         # Определение финальных признаков
         feature_columns = [col for col in df.columns if col not in self.EXCLUDE_COLUMNS]
-
-        # Валидация совпадения признаков с моделью
-        self._validate_feature_columns(feature_columns)
+        feature_columns = self._validate_feature_columns(df, feature_columns)
 
         final_data = df[feature_columns + ["Sales"]]
 
@@ -103,22 +103,26 @@ class ETLPipeline:
 
         return final_data, feature_columns
 
-    def _validate_feature_columns(self, feature_columns: List[str]) -> None:
-        """Сверяет колонки с model.feature_name_ - ловит рассинхрон при изменении признаков"""
+    def _validate_feature_columns(self, df: pd.DataFrame, feature_columns: List[str]) -> List[str]:
+        """Сверяет колонки с model.feature_name_, недостающие -> NaN, лишние -> убираем"""
         if not hasattr(self.model, "feature_name_"):
             self.logger.debug("Модель не содержит информации о признаках, пропуск валидации")
-            return
+            return feature_columns
 
-        model_features = set(self.model.feature_name_)
+        model_features = self.model.feature_name_
         pipeline_features = set(feature_columns)
 
-        missing_features = model_features - pipeline_features
-        if missing_features:
-            self.logger.warning(f"Признаки отсутствуют в данных пайплайна (будут NaN): {sorted(missing_features)}")
+        missing = [f for f in model_features if f not in pipeline_features]
+        if missing:
+            self.logger.warning(f"Признаки отсутствуют в данных (заполнены NaN): {sorted(missing)}")
+            for col in missing:
+                df[col] = np.nan
 
-        extra_features = pipeline_features - model_features
-        if extra_features:
-            self.logger.debug(f"Дополнительные признаки (будут проигнорированы моделью): {sorted(extra_features)}")
+        extra = [f for f in feature_columns if f not in set(model_features)]
+        if extra:
+            self.logger.debug(f"Лишние признаки (убраны): {sorted(extra)}")
+
+        return model_features
 
     def store_predictions(self, predictions: np.ndarray, output_path: Path) -> pd.DataFrame:
         """Сохраняет прогнозы в CSV + дублирует в БД, если доступна"""
@@ -137,6 +141,7 @@ class ETLPipeline:
             "ActualSales": self.cleaned_data["Sales"]
         })
 
+        # Построчные ошибки для CSV, агрегат - в лог
         results_df["AbsoluteError"] = np.abs(results_df["ActualSales"] - results_df["PredictedSales"])
         results_df["PercentageError"] = np.where(results_df["ActualSales"] > 0, (results_df["AbsoluteError"] / results_df["ActualSales"]) * 100, 0.0)
 
@@ -174,14 +179,14 @@ class ETLPipeline:
             # Extract
             raw_data = self.extract(new_data_path, store_data_path)
 
-            # transform
+            # Transform
             processed_data, features = self.transform(raw_data)
 
             if len(processed_data) == 0:
                 raise ValueError("Нет данных для прогнозирования после преобразований")
 
             # Predict
-            self.logger.info("Прогнозирования...")
+            self.logger.info("Прогнозирование...")
             predictions = self.model.predict(processed_data[features])
 
             # Load

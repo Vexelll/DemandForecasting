@@ -1,8 +1,9 @@
 import logging
-import json
+
 import joblib
 import pandas as pd
-from config.settings import DATA_PATH, REPORTS_PATH, setup_logging
+
+from config.settings import DATA_PATH, REPORTS_PATH, get_reporting_config, setup_logging
 from src.database.database_manager import DatabaseManager
 
 
@@ -53,30 +54,36 @@ def migrate_predictions(db: DatabaseManager) -> None:
         logger.error(f"Ошибка миграции predictions: {e}")
 
 def migrate_model_metrics(db: DatabaseManager) -> None:
-    """Миграция метрик модели из JSON в SQLite"""
-    results_file = REPORTS_PATH / "model_results.json"
+    """Миграция метрик LightGBM из CSV в SQLite"""
+    report_files = get_reporting_config().get("output_files", {})
+    metrics_file = REPORTS_PATH / report_files.get("lgbm_metrics", "lgbm_model_metrics.csv")
 
-    if not results_file.exists():
+    if not metrics_file.exists():
         logger.warning(f"Файл результатов не найден: {results_file}, пропуск миграции")
         return
 
     try:
-        with open(results_file, "r", encoding="utf-8") as f:
-            results = json.load(f)
+        metrics_df = pd.read_csv(metrics_file)
 
-        # Сохраняем метрики лучшей модели
-        metrics = {
-            "MAPE": results.get("best_mape"),
-            "R2": results.get("best_r2"),
-            "MAE": None,
-            "RMSE": None
-        }
+        if metrics_df.empty:
+            logger.warning("Файл метрик пуст")
+            return
 
-        db.save_model_metrics(
-            metrics=metrics,
-            model_version=f"migration_{results.get("best_model", "unknown")}"
-        )
-        logger.info("Мигрированы метрики модели из model_results.json")
+        for idx, row in metrics_df.iterrows():
+            metrics = {
+                "MAPE": row.get("MAPE"),
+                "RMSE": row.get("RMSE"),
+                "MAE": row.get("MAE"),
+                "R2": row.get("R2")
+            }
+
+            db.save_model_metrics(
+                metrics=metrics,
+                model_version=f"migration_lgbm_{idx}",
+                n_test_samples=int(row["Samples"]) if pd.notna(row.get("Samples")) else None
+            )
+
+        logger.info(f"Мигрировано записей model_metrics: {len(metrics_df)}")
 
     except Exception as e:
         logger.error(f"Ошибка миграции model_metrics: {e}")

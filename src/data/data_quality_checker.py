@@ -1,7 +1,8 @@
 import logging
 from datetime import datetime
-from typing import Dict, Any
-from config.settings import DATA_PATH, MODELS_PATH, get_model_config
+from typing import Any
+
+from config.settings import MODELS_PATH, get_model_config, get_monitoring_config, resolve_data_path
 
 
 class DataQualityChecker:
@@ -11,39 +12,40 @@ class DataQualityChecker:
         self.logger = logging.getLogger(__name__)
 
     def has_new_data(self) -> bool:
-        """Данные считаются новыми, если mtime = сегодня (простой алгоритм)"""
-        train_path = DATA_PATH / "raw/train.csv"
+        """mtime train.csv < threshold_hours -> данные свежие"""
+        train_path = resolve_data_path("raw", "train")
 
         if not train_path.exists():
             self.logger.warning(f"Файл данных не найден: {train_path}")
             return False
 
-        # Данные считаются новыми, если обновлялись сегодня
+        # Порог свежести из config.yaml -> monitoring.data_freshness_threshold_hours
+        threshold_hours = get_monitoring_config().get("data_freshness_threshold_hours", 24)
         train_mtime = datetime.fromtimestamp(train_path.stat().st_mtime)
-        is_new = train_mtime.date() == datetime.now().date()
+        is_new = (datetime.now() - train_mtime) < timedelta(hours=threshold_hours)
 
-        self.logger.info(f"Проверка новых данных: mtime={train_mtime.isoformat()}, is_new={is_new}")
+        self.logger.info(f"Проверка новых данных: mtime={train_mtime.isoformat()}, порог={threshold_hours}ч, is_new={is_new}")
 
         return is_new
 
     def needs_retraining(self) -> bool:
-        """Если модели нет, или она старше 7 дней -> переобучаем"""
+        """Данные новее модели -> переобучаем"""
         model_filename = get_model_config().get("model_filename", "lgbm_final_model.pkl")
         model_path = MODELS_PATH / model_filename
-        data_path = DATA_PATH / "processed/final_dataset.csv"
+        data_path = resolve_data_path("processed", "final_dataset")
 
-        # Если нет модели - нужно обучить
+        # Нет модели - нужно обучить
         if not model_path.exists():
             self.logger.info("Модель не найдена - требуется обучение")
             return True
 
-        # Если нет данных - нельзя проверить, лучше переобучить
+        # Нет данных - нельзя проверить, лучше переобучить
         if not data_path.exists():
             self.logger.info("Данные не найдены - переобучение для безопасности")
             return True
 
         try:
-            # Простая проверка: если данные новее модели, то переобучаем
+            # Данные новее модели -> переобучаем
             data_mtime = datetime.fromtimestamp(data_path.stat().st_mtime)
             model_mtime = datetime.fromtimestamp(model_path.stat().st_mtime)
 
@@ -57,21 +59,23 @@ class DataQualityChecker:
             self.logger.error(f"Ошибка проверки переобучения: {e}. Переобучаем")
             return True
 
-    def check_data_files(self) -> Dict[str, Dict[str, Any]]:
-        """Проверяет, что train.csv, store.csv, модель на месте"""
+    def check_data_files(self) -> dict[str, dict[str, Any]]:
+        """Проверяет train.csv, store.csv, модель, predictions - exists + size + mtime"""
         files_to_check = {
-            "train.csv": DATA_PATH / "raw/train.csv",
-            "store.csv": DATA_PATH / "raw/store.csv",
+            "train.csv": resolve_data_path("raw", "train"),
+            "store.csv": resolve_data_path("raw", "store"),
             "model.pkl": MODELS_PATH / get_model_config().get("model_filename", "lgbm_final_model.pkl"),
-            "predictions.csv": DATA_PATH / "outputs/predictions.csv"
+            "predictions.csv": resolve_data_path("outputs", "predictions")
         }
 
         result = {}
         for name, path in files_to_check.items():
             exists = path.exists()
+            stat = path.stat() if exists else None
             result[name] = {
                 "exists": exists,
-                "size": path.stat().st_size if exists else 0
+                "size": stat.st_size if stat else 0,
+                "mtime": datetime.fromtimestamp(stat.st_mtime).isoformat() if stat else None
             }
 
         return result

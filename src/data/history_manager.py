@@ -1,10 +1,11 @@
 import logging
-import pandas as pd
-import numpy as np
-import joblib
-from typing import Optional, Union, List
 from datetime import timedelta, datetime
 from pathlib import Path
+
+import joblib
+import numpy as np
+import pandas as pd
+
 from config.settings import DATA_PATH, get_feature_config, setup_logging
 from src.data.preprocessing import DataPreprocessor
 from src.database.database_manager import DatabaseManager
@@ -12,7 +13,7 @@ from src.database.database_manager import DatabaseManager
 class SalesHistoryManager:
     REQUIRED_COLUMNS = ["Store", "Date", "Sales", "DayOfWeek", "Promo", "StateHoliday", "SchoolHoliday"]
 
-    def __init__(self, history_file: str = "sales_history.pkl", db_path: Optional[Path] = None) -> None:
+    def __init__(self, history_file: str = "sales_history.pkl", db_path: Path | None = None) -> None:
         self.logger = logging.getLogger(__name__)
         self.history_file = DATA_PATH / "processed" / history_file
         # Явный db_path для тестов, иначе дефолтный
@@ -46,7 +47,6 @@ class SalesHistoryManager:
 
     def _load_history(self) -> pd.DataFrame:
         """БД -> pickle fallback. Начали с pickle, потом мигрировали на SQLite"""
-
         if self.db is not None:
             try:
                 df = self.db.load_sales_history()
@@ -123,7 +123,7 @@ class SalesHistoryManager:
         self._save_history()
         self.logger.info(f"История обновлена: {len(new_data_clean)} новых записей, всего: {len(self.history)}")
 
-    def get_store_history(self, store_id: int, days_back: int = 365, end_date: Union[str, datetime, None] = None) -> pd.DataFrame:
+    def get_store_history(self, store_id: int, days_back: int = 365, end_date: str | datetime = None) -> pd.DataFrame:
         """Последние N дней одного магазина до end_date"""
         if self.history is None or self.history.empty:
             return pd.DataFrame()
@@ -147,28 +147,7 @@ class SalesHistoryManager:
 
         return filtered_history
 
-    def get_latest_sales(self, store_id: int, days: int = 28, end_date: Union[str, datetime, None] = None) -> Optional[pd.Series]:
-        """Последние sales для расчетов лагов - берет с запасом +7 дней"""
-        store_history = self.get_store_history(store_id, days_back=days + 7, end_date=end_date)
-
-        if len(store_history) == 0:
-            return None
-
-        if end_date is None:
-            end_date = store_history["Date"].max()
-        else:
-            end_date = pd.to_datetime(end_date)
-
-        start_date = end_date - timedelta(days=days - 1)
-
-        recent_sales = store_history[
-            (store_history["Date"] >= start_date) &
-            (store_history["Date"] < end_date)
-            ][["Date", "Sales"]].set_index("Date")["Sales"]
-
-        return recent_sales
-
-    def calculate_lags_batch(self, store_ids: List[int], dates: List[Union[str, datetime]], lag_days: List[int] = None) -> pd.DataFrame:
+    def calculate_lags_batch(self, store_ids: list[int], dates: list[str | datetime], lag_days: list[int] = None) -> pd.DataFrame:
         """Лаги + rolling stats из истории по полному календарю"""
         if lag_days is None:
             lag_days = get_feature_config().get("lag_days", [1, 7, 14, 28])
@@ -227,7 +206,9 @@ class SalesHistoryManager:
             store_df = store_df.set_index("Date")
 
             # Полный календарь - иначе shift сломает лаги на выходных
-            full_idx = pd.date_range(store_df.index.min(), store_df.index.max(), freq="D")
+            max_requested = pd.Timestamp(max(store_dates))
+            calendar_end = max(store_df.index.max(), max_requested)
+            full_idx = pd.date_range(store_df.index.min(), calendar_end, freq="D")
             store_df = store_df.reindex(full_idx)
 
             # shift(1) - чтобы rolling не захватил текущий день
@@ -303,7 +284,7 @@ class SalesHistoryManager:
 
         return stats
 
-    def get_store_stats(self, store_id: int, end_date: Optional[str | datetime] = None) -> dict[str, int | str | float]:
+    def get_store_stats(self, store_id: int, end_date: str | datetime | None = None) -> dict[str, int | str | float]:
         """Avg/total Sales, промо-дни, праздники за последний год"""
         store_history = self.get_store_history(store_id, days_back=365, end_date=end_date)
 
@@ -341,7 +322,7 @@ class SalesHistoryManager:
             except Exception as e:
                 self.logger.error(f"Ошибка удаления из БД: {e}")
 
-        self.history = self.history[self.history["Date"] >= cutoff_dt]
+        self.history = self.history[self.history["Date"] >= cutoff_dt].reset_index(drop=True)
         removed_count = initial_count - len(self.history)
 
         if removed_count > 0:
@@ -350,7 +331,7 @@ class SalesHistoryManager:
 
         return removed_count
 
-    def export_history(self, export_path: Optional[Path] = None) -> bool:
+    def export_history(self, export_path: Path | None = None) -> bool:
         """Дамп истории в CSV - для бэкапа или анализа в Excel"""
         if self.history is None or self.history.empty:
             self.logger.warning("Нет данных для экспорта")
@@ -368,27 +349,27 @@ class SalesHistoryManager:
             return False
 
 
-def initialize_sales_history(data_path: Optional[Path] = None) -> SalesHistoryManager:
-        logger = logging.getLogger(__name__)
+def initialize_sales_history(data_path: Path | None = None) -> SalesHistoryManager:
+    logger = logging.getLogger(__name__)
 
-        if data_path is None:
-            data_path = DATA_PATH / "raw/train.csv"
+    if data_path is None:
+        data_path = DATA_PATH / "raw/train.csv"
 
-        store_path = DATA_PATH / "raw/store.csv"
+    store_path = DATA_PATH / "raw/store.csv"
 
-        preprocessor = DataPreprocessor()
-        train_data = preprocessor.load_and_merge_data(data_path, store_path)
-        cleaned_data = preprocessor.clean_data(train_data)
+    preprocessor = DataPreprocessor()
+    train_data = preprocessor.load_and_merge_data(data_path, store_path)
+    cleaned_data = preprocessor.clean_data(train_data)
 
-        history_manager = SalesHistoryManager()
-        history_manager.update_history(cleaned_data)
+    history_manager = SalesHistoryManager()
+    history_manager.update_history(cleaned_data)
 
-        stats = history_manager.get_history_stats()
-        logger.info("База исторических данных инициализирована:")
-        for key, value in stats.items():
-            logger.info(f"{key}: {value}")
+    stats = history_manager.get_history_stats()
+    logger.info("База исторических данных инициализирована:")
+    for key, value in stats.items():
+        logger.info(f"{key}: {value}")
 
-        return history_manager
+    return history_manager
 
 if __name__ == "__main__":
     setup_logging()

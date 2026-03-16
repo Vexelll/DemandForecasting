@@ -1,6 +1,9 @@
+import logging
+from typing import Any, Dict, List, Tuple
+
 import pandas as pd
 import numpy as np
-import logging
+
 from config.settings import DATA_PATH, get_feature_config, setup_logging
 
 
@@ -32,7 +35,8 @@ class FeatureEngineer:
         try:
             # CompetitionDistance NaN = конкурента нет -> ставим 100к (дальше максимум в ~75к)
             if "CompetitionDistance" in df.columns:
-                df["HasCompetition"] = (~df["CompetitionOpenSinceYear"].isna()).astype(int)
+                if "CompetitionOpenSinceYear" in df.columns:
+                    df["HasCompetition"] = (~df["CompetitionOpenSinceYear"].isna()).astype(int)
                 df["CompetitionDistance"] = df["CompetitionDistance"].fillna(100000)
 
             competition_columns = ["CompetitionOpenSinceMonth", "CompetitionOpenSinceYear"]
@@ -116,6 +120,7 @@ class FeatureEngineer:
         df["Year"] = df["Date"].dt.year
         df["Month"] = df["Date"].dt.month
         df["Week"] = df["Date"].dt.isocalendar().week.astype(int)
+        df["ISOYear"] = df["Date"].dt.isocalendar().year.astype(int)
         df["Day"] = df["Date"].dt.day
         df["DayOfYear"] = df["Date"].dt.dayofyear
 
@@ -170,7 +175,7 @@ class FeatureEngineer:
 
         return df
 
-    def _calculate_days_since_last_promo(self, df: pd.DataFrame) -> pd.DataFrame:
+    def _calculate_days_since_last_promo(self, df: pd.DataFrame) -> pd.Series:
         """merge_asof по промо-датам - быстрее чем groupby+apply"""
         df = df.sort_values(["Store", "Date"])
 
@@ -191,8 +196,8 @@ class FeatureEngineer:
 
         if len(promo_records) > 0 and len(non_promo) > 0:
             merged = pd.merge_asof(
-                non_promo.sort_values("Date"),
-                promo_records.sort_values("LastPromoDate"),
+                non_promo.sort_values(["Date", "Store"]),
+                promo_records.sort_values(["LastPromoDate", "Store"]),
                 left_on="Date",
                 right_on="LastPromoDate",
                 by="Store",
@@ -208,7 +213,7 @@ class FeatureEngineer:
         return result
 
     def create_lag_features(self, df: pd.DataFrame, lags: list = None) -> pd.DataFrame:
-        """Лаги через полный календарь (pd.date_range) - чтобы shift() сдвигался по дням, а не по строкам"""
+        """Лаги через полный календарь (MultiIndex) - shift() по дням, а не по строкам"""
         self.logger.info("Создание лаговых признаков...")
 
         if lags is None:
@@ -222,42 +227,40 @@ class FeatureEngineer:
         df["Date"] = pd.to_datetime(df["Date"])
         df = df.sort_values(["Store", "Date"]).reset_index(drop=True)
 
-        # Без полного календаря shift(7) сдвинет на 7 строк, а не на 7 дней
-        store_frames = []
+        # Полный календарь - без него shift(7) сдвинет на 7 строк, а не на 7 дней
+        stores = df["Store"].unique()
+        date_range = pd.date_range(df["Date"].min(), df["Date"].max(), freq="D")
+        full_idx = pd.MultiIndex.from_product([stores, date_range], names=["Store", "Date"])
 
-        for store_id in df["Store"].unique():
-            store_df = df[df["Store"] == store_id][["Date", "Sales"]].copy()
-            store_df = store_df.set_index("Date")
+        sales = (
+            df.set_index(["Store", "Date"])["Sales"]
+            .reindex(full_idx)
+            .sort_index()
+        )
 
-            full_idx = pd.date_range(store_df.index.min(), store_df.index.max(), freq="D")
-            store_df = store_df.reindex(full_idx)
+        # shifted_sales - чтобы rolling не захватил текущий день
+        shifted_sales = sales.groupby(level="Store").shift(1)
 
-            # shifted_sales - чтобы rolling не захватил текущий день
-            shifted_sales = store_df["Sales"].shift(1)
+        lag_df = pd.DataFrame(index=full_idx)
 
-            for lag in lags:
-                store_df[f"SalesLag_{lag}"] = store_df["Sales"].shift(lag)
+        for lag in lags:
+            lag_df[f"SalesLag_{lag}"] = sales.groupby(level="Store").shift(lag)
 
-                store_df[f"RollingMean_{lag}"] = shifted_sales.rolling(window=lag, min_periods=1).mean()
-                store_df[f"RollingStd_{lag}"] = shifted_sales.rolling(window=lag, min_periods=1).std()
-                store_df[f"RollingMin_{lag}"] = shifted_sales.rolling(window=lag, min_periods=1).min()
-                store_df[f"RollingMax_{lag}"] = shifted_sales.rolling(window=lag, min_periods=1).max()
+            grp = shifted_sales.groupby(level="Store")
+            lag_df[f"RollingMean_{lag}"] = grp.transform(lambda x: x.rolling(lag, min_periods=1).mean())
+            lag_df[f"RollingStd_{lag}"] = grp.transform(lambda x: x.rolling(lag, min_periods=1).std())
+            lag_df[f"RollingMin_{lag}"] = grp.transform(lambda x: x.rolling(lag, min_periods=1).min())
+            lag_df[f"RollingMax_{lag}"] = grp.transform(lambda x: x.rolling(lag, min_periods=1).max())
 
-            store_df["Store"] = store_id
-            store_df = store_df.reset_index().rename(columns={"index": "Date"})
-            store_frames.append(store_df)
-
-        calendar_df = pd.concat(store_frames, ignore_index=True)
-
-        # Оставляем только те даты, которые были в исходном df
-        lag_cols = [c for c in calendar_df.columns if "Lag" in c or "Rolling" in c]
-        result = df.merge(
-            calendar_df[["Store", "Date"] + lag_cols],
+        # Мержим только лаговые колонки обратно (без Sales - она уже в df)
+        lag_cols = list(lag_df.columns)
+        results = df.merge(
+            lag_df.reset_index()[["Store", "Date"] + lag_cols],
             on=["Store", "Date"],
             how="left"
         )
 
-        result = self.fill_lag_missing_values(result)
+        result = self.fill_lag_missing_values(results)
 
         na_count = result[lag_cols].isna().sum().sum()
         self.logger.info(f"Лаговые признаки созданы. Осталось NaN: {na_count}")
@@ -275,40 +278,20 @@ class FeatureEngineer:
 
         df = df.sort_values(["Store", "Date"]).copy()
 
+        _fill_strategies = {"SalesLag": "mean", "RollingMean": "mean", "RollingStd": "std", "RollingMin": "min", "RollingMax": "max"}
+
         for col in lag_columns:
-            na_count = df[col].isna().sum()
-            if na_count > 0:
-                if "SalesLag" in col:
-                    # expanding, а не rolling - в начале истории нет 28 дней назад
-                    df[col] = df.groupby("Store")[col].transform(
-                        lambda x: x.fillna(x.expanding(min_periods=1).mean())
-                    )
-                    # Совсем новый магазин без истории -> 0
-                    df[col] = df[col].fillna(0)
-
-                elif "RollingMean" in col:
-                    df[col] = df.groupby("Store")[col].transform(
-                        lambda x: x.fillna(x.expanding(min_periods=1).mean())
-                    )
-                    df[col] = df[col].fillna(0)
-
-                elif "RollingStd" in col:
-                    df[col] = df.groupby("Store")[col].transform(
-                        lambda x: x.fillna(x.expanding(min_periods=1).std())
-                    )
-                    df[col] = df[col].fillna(0)
-
-                elif "RollingMin" in col:
-                    df[col] = df.groupby("Store")[col].transform(
-                        lambda x: x.fillna(x.expanding(min_periods=1).min())
-                    )
-                    df[col] = df[col].fillna(0)
-
-                elif "RollingMax" in col:
-                    df[col] = df.groupby("Store")[col].transform(
-                        lambda x: x.fillna(x.expanding(min_periods=1).max())
-                    )
-                    df[col] = df[col].fillna(0)
+            if df[col].isna().any():
+                for pattern, agg_func in _fill_strategies.items():
+                    if pattern in col:
+                        df[col] = df.groupby("Store")[col].transform(
+                            lambda x, fn=agg_func: x.fillna(
+                                getattr(x.expanding(min_periods=1), fn)()
+                            )
+                        )
+                        # Совсем новый магазин без истории -> 0
+                        df[col] = df[col].fillna(0)
+                        break
 
         final_na_count = df[lag_columns].isna().sum().sum()
         self.logger.info(f"Осталось пропусков: {final_na_count}")
@@ -326,7 +309,7 @@ class FeatureEngineer:
         df["IsEaster"] = (df["StateHoliday"] == "b").astype(int)
         df["IsChristmas"] = (df["StateHoliday"] == "c").astype(int)
 
-        # День до/после праздника тоже влияет на трафик
+        # shift по строкам, не по календарю - пропущенный день = закрытый = не праздник, ок
         df["WasHolidayYesterday"] = df.groupby("Store")["IsHoliday"].shift(1).fillna(0).astype(int)
         df["IsHolidayTomorrow"] = df.groupby("Store")["IsHoliday"].shift(-1).fillna(0).astype(int)
 
@@ -380,7 +363,7 @@ class FeatureEngineer:
 
         return df
 
-    def _validate_input_data(self, df):
+    def _validate_input_data(self, df: pd.DataFrame) -> None:
         """Проверяет, что Store, Date, Sales и т.д. на месте"""
         missing_columns = [col for col in self.REQUIRED_COLUMNS if col not in df.columns]
         if missing_columns:
@@ -389,7 +372,7 @@ class FeatureEngineer:
         if "Date" in df.columns and not pd.api.types.is_datetime64_any_dtype(df["Date"]):
             raise ValueError("Колонка Date должна содержать данные типа datetime")
 
-    def prepare_final_dataset(self, df, verbose=False):
+    def prepare_final_dataset(self, df: pd.DataFrame, verbose: bool = False) -> Tuple[pd.DataFrame, List[str]]:
         """Весь пайплайн: NaN -> признаки -> лаги -> fillna -> drop exclude cols"""
         self.logger.info("Подготовка финального датасета...")
         self.logger.info(f"Исходные данные: {df.shape[0]} записей, {df.shape[1]} колонок")
@@ -424,7 +407,7 @@ class FeatureEngineer:
             self.logger.error(f"Ошибка подготовки датасета: {e}")
             raise
 
-    def get_feature_statistics(self):
+    def get_feature_statistics(self) -> Dict[str, Any]:
         """Сколько признаков создано, по категориям"""
         return {
             "total_features": len(self.feature_names),

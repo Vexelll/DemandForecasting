@@ -1,13 +1,15 @@
-import pytest
-import numpy as np
-import pandas as pd
 import logging
+import shutil
 import tempfile
 from pathlib import Path
-import shutil
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from src.data.history_manager import SalesHistoryManager
 from src.data.preprocessing import DataPreprocessor
 from src.features.feature_engineering import FeatureEngineer
-from src.data.history_manager import SalesHistoryManager
 
 logger = logging.getLogger(__name__)
 
@@ -98,7 +100,7 @@ class TestDataPreprocessor:
         test_train.to_csv(test_train_path, index=False)
         test_store.to_csv(test_store_path, index=False)
 
-        with pytest.raises(ValueError, match="Отсутствуют обязательные колонки"):
+        with pytest.raises(ValueError, match="Нет обязательных колонок"):
             self.preprocessor.load_and_merge_data(test_train_path, test_store_path)
 
     def test_clean_data_basic(self):
@@ -460,32 +462,6 @@ class TestHistoryManager:
 
         assert jan_2_sales_new == 1500.0
 
-    def test_get_latest_sales(self):
-        """Тест получения последних продаж"""
-        # Создаем историю с известными данными
-        dates = pd.date_range("2024-01-01", periods=10)
-        test_data = pd.DataFrame({
-            "Store": [1] * 10,
-            "Date": dates,
-            "Sales": [1000 + i * 100 for i in range(10)],  # Линейный рост
-            "DayOfWeek": [(i % 7) + 1 for i in range(10)],
-            "Promo": [1 if i % 3 == 0 else 0 for i in range(10)],
-            "StateHoliday": ["0"] * 10,
-            "SchoolHoliday": [0] * 10
-        })
-
-        self.manager.update_history(test_data)
-
-        # Получаем последние 5 продаж
-        latest_sales = self.manager.get_latest_sales(1, days=5)
-
-        assert latest_sales is not None
-        assert len(latest_sales) <= 5
-
-        # Проверяем, что это действительно последние продажи перед максимальной датой
-        max_date = self.manager.history["Date"].max()
-        assert all(latest_sales.index < max_date)
-
     def test_cleanup_old_data(self):
         """Тест очистки устаревших данных c проверкой сохранения в БД"""
         # Создаем данные с разными датами
@@ -639,7 +615,7 @@ class TestEdgeCases:
 
         test_data["Store"] = pd.to_numeric(test_data["Store"], errors="coerce")
         test_data["Sales"] = pd.to_numeric(test_data["Sales"], errors="coerce")
-        test_data["Date"] = pd.to_datetime(test_data["Date"], errors="coerce")
+        test_data["Date"] = pd.to_datetime(test_data["Date"], errors="coerce", format="%Y-%m-%d")
 
         # Должен обработать с ошибками преобразования
         result = preprocessor.clean_data(test_data)

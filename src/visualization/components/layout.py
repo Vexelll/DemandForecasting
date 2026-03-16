@@ -1,5 +1,7 @@
-from dash import dcc, html
 from datetime import datetime
+
+from dash import dcc, html
+
 from .controls import create_controls
 
 # Единая конфигурация графиков Plotly (отключение лишних кнопок)
@@ -19,8 +21,8 @@ GRAPH_CONFIG = {
 }
 
 
-def create_layout(data):
-    """Header + controls + 4 графика + таблица + footer"""
+def create_layout(data, available_runs=None):
+    """Header + controls + 4 графика + мониторинг + таблица + footer"""
     return html.Div([
         # Заголовок
         _create_header(),
@@ -32,7 +34,7 @@ def create_layout(data):
             color="#667eea",
             children=[
                 # Контролы
-                create_controls(data),
+                create_controls(data, available_runs=available_runs),
 
                 # Метрики
                 html.Div([
@@ -79,6 +81,25 @@ def create_layout(data):
                         )
                     ], className="chart-container"),
                 ], className="charts-row"),
+
+                # Мониторинг пайплайна
+                html.Div([
+                    html.H3("Мониторинг пайплайна", className="section-title"),
+                    html.Div([
+                        html.Div([
+                            dcc.Graph(
+                                id="metrics-trend",
+                                config=GRAPH_CONFIG,
+                                style={"height": "100%"}
+                            )
+                        ], className="chart-container"),
+
+                        html.Div(
+                            id="pipeline-runs-table",
+                            className="chart-container"
+                        ),
+                    ], className="charts-row"),
+                ], className="section"),
 
                 # Таблица данных
                 html.Div([

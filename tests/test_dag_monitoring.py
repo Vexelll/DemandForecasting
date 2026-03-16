@@ -1,9 +1,11 @@
-import unittest
-import tempfile
 import json
 import shutil
+import tempfile
+import unittest
 from pathlib import Path
+
 from airflow.dags.monitoring.dag_monitor import DAGMonitor
+from airflow.sdk.bases.decorator import FParams
 
 
 class TestDAGMonitor(unittest.TestCase):
@@ -24,6 +26,7 @@ class TestDAGMonitor(unittest.TestCase):
         """Вспомогательный метод: создание монитора с тестовым файлом"""
         monitor = DAGMonitor()
         monitor.monitoring_file = self.reports_path / "test_monitoring.json"
+        monitor.performance_report_file = self.reports_path / "test_performance.json"
         monitor.setup_monitoring()
         return monitor
 
@@ -33,7 +36,6 @@ class TestDAGMonitor(unittest.TestCase):
 
         self.assertTrue(monitor.monitoring_file.exists())
 
-        # Проверяем структуру созданного файла
         with open(monitor.monitoring_file, "r", encoding="utf-8") as f:
             data = json.load(f)
 
@@ -41,7 +43,6 @@ class TestDAGMonitor(unittest.TestCase):
         for key in expected_keys:
             self.assertIn(key, data)
 
-        # Проверяем значения по умолчанию
         self.assertEqual(data["dag_runs"], [])
         self.assertEqual(data["success_rate"], 0)
         self.assertIsNone(data["last_success"])
@@ -87,49 +88,31 @@ class TestDAGMonitor(unittest.TestCase):
         self.assertIn("timestamp", data["dag_runs"][0])
         self.assertIn("duration_seconds", data["dag_runs"][0])
 
-    def test_dag_run_logging_failure(self):
-        """Тест логирования неудачного запуска DAG"""
+    def test_dag_run_logging_failure_with_error(self):
+        """Тест логирования неудачного запуска DAG с сообщением об ошибке"""
         monitor = self._create_monitor()
 
-        # Логируем несколько запусков
-        for i in range(3):
-            monitor.log_dag_run(
-                f"test_dag_{i}",
-                "success" if i % 2 == 0 else "failed",
-                i + 1,
-                None if i % 2 == 0 else f"Error {i}"
-            )
+        monitor.log_dag_run("test_dag", "failed", 3, "FileNotFoundError: train.csv")
 
         data = monitor._load_monitoring_data()
 
-        self.assertEqual(len(data["dag_runs"]), 3)
-
-        # Проверяем метрики успешности
-        self.assertIn("success_rate", data)
-        self.assertGreaterEqual(data["success_rate"], 0)
-        self.assertLessEqual(data["success_rate"], 100)
+        self.assertEqual(len(data["dag_runs"]), 1)
+        self.assertEqual(data["dag_runs"][0]["status"], "failed")
+        self.assertEqual(data["dag_runs"][0]["error"], "FileNotFoundError: train.csv")
+        self.assertEqual(data["dag_runs"][0]["tasks_executed"], 3)
 
     def test_multiple_dag_runs_logging(self):
-        """Тест логирования нескольких запусков DAG"""
+        """Тест логирования нескольких запусков DAG с правильным success_rate"""
         monitor = self._create_monitor()
 
-        # Логируем несколько запусков
-        for i in range(3):
-            monitor.log_dag_run(
-                f"test_dag_{i}",
-                "success" if i % 2 == 0 else "failed",
-                i + 1,
-                None if i % 2 == 0 else f"Error {i}"
-            )
+        monitor.log_dag_run("dag_1", "success", 5)
+        monitor.log_dag_run("dag_2", "failed", 3, "Error")
+        monitor.log_dag_run("dag_3", "success", 4)
 
         data = monitor._load_monitoring_data()
 
         self.assertEqual(len(data["dag_runs"]), 3)
-
-        # Проверяем метрики успешности
-        self.assertIn("success_rate", data)
-        self.assertGreaterEqual(data["success_rate"], 0)
-        self.assertLessEqual(data["success_rate"], 100)
+        self.assertAlmostEqual(data["success_rate"], 66.67, places=1)
 
     def test_dag_runs_storage_limit(self):
         """Тест ограничения хранения запусков (MAX_STORED_RUNS)"""
@@ -171,8 +154,11 @@ class TestDAGMonitor(unittest.TestCase):
 
         self.assertIsNotNone(data["last_success"])
 
+        # last_success - timestamp второго запуска (единственный success)
+        self.assertEqual(data["last_success"], data["dag_runs"][1]["timestamp"])
+
     def test_alert_on_consecutive_failures(self):
-        """Тест генерации алертов при последовательных неудачах"""
+        """Тест: N подряд failures в конце -> алерт"""
         monitor = self._create_monitor()
 
         # Два подряд неудачных запуска
@@ -185,15 +171,142 @@ class TestDAGMonitor(unittest.TestCase):
         self.assertTrue(len(data["alerts"]) > 0)
         self.assertTrue(any("Критично" in alert for alert in data["alerts"]))
 
+    def test_no_alert_when_failures_not_consecutive(self):
+        """Тест: [fail, success, fail] -> не подряд, алерта о подряд failures нет"""
+        monitor = self._create_monitor()
+
+        monitor.log_dag_run("dag", "failed", 1, "Error 1")
+        monitor.log_dag_run("dag", "success", 5)
+        monitor.log_dag_run("dag", "failed", 2, "Error 2")
+
+        data = monitor._load_monitoring_data()
+
+        # Подряд failures = 1 (только последний), порог = 2 -> нет алерта "Критично"
+        critical_alerts = [a for a in data["alerts"] if "Критично" in a]
+        self.assertEqual(len(critical_alerts), 0)
+
+    def test_alert_resets_after_success(self):
+        "Тест: [fail, fail, success] -> подряд сбрасывается, алерта нет"
+        monitor = self._create_monitor()
+
+        monitor.log_dag_run("dag", "failed", 1, "Error 1")
+        monitor.log_dag_run("dag", "failed", 2, "Error 2")
+        monitor.log_dag_run("dag", "success", 5)
+
+        data = monitor._load_monitoring_data()
+
+        critical_alerts = [a for a in data["alerts"] if "Критично" in a]
+        self.assertEqual(len(critical_alerts), 0)
+
+    def test_timer_duration(self):
+        monitor = self._create_monitor()
+
+        monitor.start_timer()
+        duration = monitor._calculate_duration()
+
+        self.assertGreater(duration, 0)
+
+    def test_duration_without_timer(self):
+        "Тест: start_timer() -> _claculate_duration() > 0"
+        monitor = self._create_monitor()
+
+        duration = monitor._calculate_duration()
+
+        self.assertEqual(duration, 0.0)
+
+    def test_logged_run_has_duration(self):
+        """Тест: после start_timer() -> log_dag_run записывает duration > 0"""
+        monitor = self._create_monitor()
+
+        monitor.start_timer()
+        monitor.log_dag_run("dag", "success", 5)
+
+        data = monitor._load_monitoring_data()
+
+        self.assertGreater(data["dag_runs"][0]["duration_seconds"], 0)
+
     def test_data_quality_check_basic(self):
-        """Базовый тест проверки качества данных"""
+        """Базовый тест проверки качества данных - структура ответа"""
         monitor = DAGMonitor()
         checks = monitor.check_data_quality()
 
-        required_checks = ["training_data_exists", "model_exists", "predictions_exist", "data_freshness"]
+        required_checks = ["training_data_exists", "model_exists", "predictions_exist", "data_freshness_hours"]
 
         for check in required_checks:
             self.assertIn(check, checks)
+
+    def test_data_quality_freshness_is_numeric(self):
+        """Тест: data_freshness_hours - число или None, не строка"""
+        monitor = DAGMonitor()
+        checks = monitor.check_data_quality()
+
+        freshness = checks["data_freshness_hours"]
+        if freshness is not None:
+            self.assertIsInstance(freshness, (int, float))
+
+    def test_system_health_assessment_all_missing(self):
+        """Тест: все файлы отсутствуют -> health_score = 0, status = critical"""
+        monitor = self._create_monitor()
+
+        fake_quality = {
+            "training_data_exists": False,
+            "model_exists": False,
+            "predictions_exist": False,
+            "data_freshness_hours": None
+        }
+
+        health = monitor._assess_system_health(fake_quality)
+
+        self.assertEqual(health["health_score"], 0)
+        self.assertEqual(health["status"], "critical")
+
+    def test_system_health_assessment_all_present_fresh(self):
+        """Тест: все файлы есть + данные свежие -> health_score = 100, status = healthy"""
+        monitor = self._create_monitor()
+
+        fake_quality = {
+            "training_data_exists": True,
+            "model_exists": True,
+            "predictions_exist": True,
+            "data_freshness_hours": 2.0
+        }
+
+        health = monitor._assess_system_health(fake_quality)
+
+        self.assertEqual(health["health_score"], 100)
+        self.assertEqual(health["status"], "healthy")
+
+    def test_system_health_assessment_stale_data(self):
+        """Тест: файлы есть, но данные устаревшие -> 75, healthy"""
+        monitor = self._create_monitor()
+
+        fake_quality = {
+            "training_data_exists": True,
+            "model_exists": True,
+            "predictions_exist": True,
+            "data_freshness_hours": 999.0
+        }
+
+        health = monitor._assess_system_health(fake_quality)
+
+        self.assertEqual(health["health_score"], 75)
+        self.assertEqual(health["status"], "healthy")
+
+    def test_system_health_assessment_degraded(self):
+        """Тест: 2 из 4 -> 50, degraded"""
+        monitor = self._create_monitor()
+
+        fake_quality = {
+            "training_data_exists": True,
+            "model_exists": True,
+            "predictions_exist": False,
+            "data_freshness_hours": None
+        }
+
+        health = monitor._assess_system_health(fake_quality)
+
+        self.assertEqual(health["health_score"], 50)
+        self.assertEqual(health["status"], "degraded")
 
     def test_generate_performance_report(self):
         """Тест генерации отчета о производительности"""
@@ -226,42 +339,20 @@ class TestDAGMonitor(unittest.TestCase):
         self.assertEqual(report["total_runs"], 0)
         self.assertIn("error", report)
 
-    def test_system_health_assessment(self):
-        """Тест оценки состояния системы"""
+    def test_performance_report_saved_to_file(self):
+        """Тест: отчет сохраняется в файл"""
         monitor = self._create_monitor()
 
-        health = monitor._assess_system_health()
+        monitor.log_dag_run("dag", "success", 5)
+        monitor.generate_performance_report()
 
-        self.assertIn("health_score", health)
-        self.assertIn("status", health)
-        self.assertIn(health["status"], ["healthy", "degraded", "critical"])
-        self.assertGreaterEqual(health["health_score"], 0)
-        self.assertLessEqual(health["health_score"], 100)
+        self.assertTrue(monitor.performance_report_file.exists())
 
-    def test_parse_timedelta_hours(self):
-        """Тест парсинга строкового представления timedelta в часы"""
-        monitor = self._create_monitor()
+        with open(monitor.performance_report_file, "r", encoding="utf-8") as f:
+            saved_report = json.load(f)
 
-        # Формат с днями
-        self.assertAlmostEqual(
-            monitor._parse_timedelta_hours("2 days, 3:30:00"),
-            51.0,   # 2*24 + 3
-            places=0
-        )
-
-        # Формат без дней
-        self.assertAlmostEqual(
-            monitor._parse_timedelta_hours("12:30:00"),
-            12.0,
-            places=0
-        )
-
-        # 1 день
-        self.assertAlmostEqual(
-            monitor._parse_timedelta_hours("1 day, 0:00:00"),
-            24.0,
-            places=0
-        )
+        self.assertIn("total_runs", saved_report)
+        self.assertEqual(saved_report["total_runs"], 1)
 
 
 if __name__ == "__main__":

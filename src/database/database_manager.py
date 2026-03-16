@@ -1,13 +1,15 @@
-import sqlite3
-import logging
-import uuid
 import json
-import pandas as pd
-from pathlib import Path
-from datetime import datetime
-from typing import Optional, Dict, Any, List, Union
+import logging
+import sqlite3
+import uuid
 from contextlib import contextmanager
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+import pandas as pd
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+
 from config.settings import DATA_PATH, get_database_config
 
 
@@ -16,11 +18,12 @@ class DatabaseManager:
     # Версия схемы - на случай если придется менять таблицы
     DB_VERSION = 1
 
-    def __init__(self, db_path: Optional[Path] = None) -> None:
+    def __init__(self, db_path: Path | None = None) -> None:
         self.logger = logging.getLogger(__name__)
 
         if db_path is None:
-            db_path = DATA_PATH / "demand_forecasting.db"
+            db_filename = get_database_config().get("db_filename", "demand_forecasting.db")
+            db_path = DATA_PATH / db_filename
 
         self.db_path = db_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -136,7 +139,7 @@ class DatabaseManager:
         )
     )
     def save_sales_history(self, df: pd.DataFrame) -> int:
-        """Upsert продаж: ISERT OR REPLACE по ключу (store_id, date)"""
+        """Upsert продаж: INSERT OR REPLACE по ключу (store_id, date)"""
         if df is None or len(df) == 0:
             self.logger.warning("Попытка сохранения пустого DataFrame в sales_history")
             return 0
@@ -212,7 +215,7 @@ class DatabaseManager:
             self.logger.error(f"Ошибка загрузки sales_history: {e}")
             return pd.DataFrame()
 
-    def get_store_history(self, store_id: int, days_back: int = 365, end_date: Optional[str] = None) -> pd.DataFrame:
+    def get_store_history(self, store_id: int, days_back: int = 365, end_date: str | None = None) -> pd.DataFrame:
         """История одного магазина за N дней назад от end_date"""
         try:
             if end_date is None:
@@ -246,7 +249,7 @@ class DatabaseManager:
             self.logger.error(f"Ошибка получения истории магазина {store_id}: {e}")
             return pd.DataFrame()
 
-    def get_sales_history_stats(self) -> Dict[str, Any]:
+    def get_sales_history_stats(self) -> dict[str, Any]:
         """Кол-во записей, магазинов, диапазон дат, размер файла"""
         try:
             with self._get_connection() as conn:
@@ -283,7 +286,7 @@ class DatabaseManager:
             self.logger.error(f"Ошибка получения статистики sales_history: {e}")
             return {"total_records": 0, "error": str(e)}
 
-    def delete_old_sales_history(self, cutoff_date: str) -> str:
+    def delete_old_sales_history(self, cutoff_date: str) -> int:
         """Чистка старых данных по cutoff_date"""
         try:
             with self._get_connection() as conn:
@@ -384,7 +387,7 @@ class DatabaseManager:
         try:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("SELECT run_id FROM predictions ORDER BY created_at DESC LIMIT 1")
+                cursor.execute("SELECT run_id FROM predictions ORDER BY rowid DESC LIMIT 1")
                 row = cursor.fetchone()
 
                 if row is None:
@@ -395,7 +398,7 @@ class DatabaseManager:
             self.logger.error(f"Ошибка загрузки последних прогнозов: {e}")
             return pd.DataFrame()
 
-    def list_prediction_runs(self, limit: int = 20) -> List[Dict[str, Any]]:
+    def list_prediction_runs(self, limit: int = 20) -> list[dict[str, Any]]:
         """Список run_id с мета: кол-во записей, даты, avg mape"""
         try:
             with self._get_connection() as conn:
@@ -411,7 +414,7 @@ class DatabaseManager:
                         MIN(created_at) as created_at
                     FROM predictions
                     GROUP BY run_id
-                    ORDER BY created_at DESC
+                    ORDER BY MAX(rowid) DESC
                     LIMIT ?""",
                     (limit,)
                 )
@@ -425,8 +428,8 @@ class DatabaseManager:
         wait=wait_exponential(multiplier=1, min=2, max=10),
         retry=retry_if_exception_type(sqlite3.OperationalError)
     )
-    def log_pipeline_run(self, run_id: str, dag_name: str, status: str, started_at: Optional[str] = None, finished_at: Optional[str] = None, duration_seconds: Optional[float] = None, records_processed: int = 0,
-        mape: Optional[float] = None, rmse: Optional[float] = None, mae: Optional[float] = None, r2_score: Optional[float] = None, error_message: Optional[str] = None, model_version: Optional[str] = None) -> None:
+    def log_pipeline_run(self, run_id: str, dag_name: str, status: str, started_at: str | None = None, finished_at: str | None = None, duration_seconds: float | None = None, records_processed: int = 0,
+        mape: float | None = None, rmse: float | None = None, mae: float | None = None, r2_score: float | None = None, error_message: str | None = None, model_version: str | None = None) -> None:
         """Пишет в pipeline_runs: run_id, статус, метрики, длительность"""
         if started_at is None:
             started_at = datetime.now().isoformat()
@@ -449,7 +452,7 @@ class DatabaseManager:
         except Exception as e:
             self.logger.error(f"Ошибка логирования запуска пайплайна: {e}")
 
-    def get_pipeline_runs(self, limit: int = 20) -> List[Dict[str, Any]]:
+    def get_pipeline_runs(self, limit: int = 20) -> list[dict[str, Any]]:
         """Последние N запусков из pipeline_runs"""
         try:
             with self._get_connection() as conn:
@@ -463,8 +466,8 @@ class DatabaseManager:
             self.logger.error(f"Ошибка получения истории запусков: {e}")
             return []
 
-    def save_model_metrics(self, metrics: Dict[str, Any], model_version: Optional[str] = None, n_features: Optional[int] = None, n_train_samples: Optional[int] = None, n_test_samples: Optional[int] = None,
-        best_params: Optional[Dict] = None, training_duration_seconds: Optional[float] = None) -> None:
+    def save_model_metrics(self, metrics: dict[str, Any], model_version: str | None = None, n_features: int | None = None, n_train_samples: int | None = None, n_test_samples: int | None = None,
+        best_params: dict | None = None, training_duration_seconds: float | None = None) -> None:
         """INSERT в model_metrics после каждого обучения"""
         if model_version is None:
             model_version = f"v_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -486,7 +489,7 @@ class DatabaseManager:
         except Exception as e:
             self.logger.error(f"Ошибка сохранения метрик модели: {e}")
 
-    def get_model_metrics_history(self, limit: int = 20) -> List[Dict[str, Any]]:
+    def get_model_metrics_history(self, limit: int = 20) -> list[dict[str, Any]]:
         """Тренд MAPE/RMSE по обучениям - для дашборда"""
         try:
             with self._get_connection() as conn:
@@ -505,7 +508,7 @@ class DatabaseManager:
         """run_YYYYMMDD_<6hex> - уникальный ID запуска"""
         return f"run_{datetime.now().strftime("%Y%m%d_%H%M%S")}_{uuid.uuid4().hex[:6]}"
 
-    def get_database_stats(self) -> Dict[str, Any]:
+    def get_database_stats(self) -> dict[str, Any]:
         """Размеры таблиц + вес файла БД"""
         try:
             with self._get_connection() as conn:
@@ -533,9 +536,6 @@ class DatabaseManager:
             db = DatabaseManager()
             logger.debug("DatabaseManager инициализирован")
             return db
-        except ImportError:
-            logger.debug("Модуль database_manager не найден, fallback на файлы")
-            return None
         except Exception as e:
             logger.warning(f"Ошибка инициализации БД, fallback на файлы: {e}")
             return None

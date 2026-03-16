@@ -8,6 +8,8 @@ import requests
 from datetime import datetime
 from pathlib import Path
 
+import requests
+
 
 class AirflowRunner:
     """Класс для управления локальным запуском Airflow через WSL"""
@@ -47,7 +49,7 @@ class AirflowRunner:
 
             # Форматтер
             formatter = logging.Formatter(
-                "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+                "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
                 datefmt="%Y-%m-%d %H:%M:%S"
             )
             console_handler.setFormatter(formatter)
@@ -64,7 +66,7 @@ class AirflowRunner:
 
         return logger
 
-    def _validate_paths(self):
+    def _validate_paths(self) -> None:
         """Валидация критических путей"""
         required_paths = [
             self.project_root / "airflow/dags",
@@ -82,22 +84,21 @@ class AirflowRunner:
             self.logger.warning(f"Некоторые функции могут работать некорректно")
 
     @staticmethod
-    def _convert_to_wsl_path(windows_path):
-        """Конвертация Windows пути в WSL путь"""
+    def _convert_to_wsl_path(windows_path: Path) -> str:
+        """C\\foo\\bar -> /mnt/с/foo/bar"""
         path_str = str(windows_path)
 
-        # Конвертация для любых дисков (C:\foo\bar -> /mnt/c/foo/bar)
         if ":" in path_str and path_str[1:3] == ":\\":
             drive_letter = path_str[0].lower()
             remaining_path = path_str[3:].replace("\\", "/")
             return f"/mnt/{drive_letter}/{remaining_path}"
-        else:
-            # Уже WSL путь или относительный
-            return path_str.replace("\\", "/")
+
+        # Уже WSL путь или относительный
+        return path_str.replace("\\", "/")
 
     @staticmethod
     def _quote_wsl_path(path: str) -> str:
-        """Экранирование WSL-пути для безопастного использования в bash"""
+        """Экранирование WSL-пути для безопасного использования в bash"""
         return shlex.quote(path)
 
     def _get_airflow_env(self) -> str:
@@ -136,12 +137,17 @@ class AirflowRunner:
         except subprocess.TimeoutExpired:
             self.logger.error(f"Таймаут выполнения команды: {command[:50]}...")
             return None
+        except FileNotFoundError:
+            self.logger.error("wsl.exe не найден - WSL не установлен")
+            return None
         except Exception as e:
             self.logger.error(f"Ошибка выполнения команды: {e}")
             return None
 
     def _run_wsl_command_with_retry(self, command, timeout=300, retries=3, delay=5):
         """Выполнение WSL команды с повторными попытками"""
+        result = None
+
         for attempt in range(1, retries + 1):
             result = self._run_wsl_command(command, timeout=timeout)
 
@@ -150,9 +156,10 @@ class AirflowRunner:
 
             if attempt < retries:
                 self.logger.warning(f"Попытка {attempt}/{retries} не удалась, повтор через {delay} сек...")
+                time.sleep(delay)
 
-            self.logger.error(f"Команда не выполнена после {retries} попыток")
-            return result
+        self.logger.error(f"Команда не выполнена после {retries} попыток")
+        return result
 
     def sync_files_to_wsl(self):
         """Синхронизация файлов из Windows в WSL"""
@@ -206,18 +213,18 @@ class AirflowRunner:
                 # Копируем файл в WSL
                 quoted_target = self._quote_wsl_path(target)
                 copy_command = f"cat > {quoted_target}"
-                copy_proccess = subprocess.run(
+                copy_process = subprocess.run(
                     ["wsl", "bash", "-c", copy_command],
                     input=file_content.encode("utf-8"),
                     capture_output=True,
                     timeout=30
                 )
 
-                if copy_proccess.returncode == 0:
+                if copy_process.returncode == 0:
                     self.logger.info(f"Файл синхронизирован: {name}")
                     sync_results["successful"] += 1
                 else:
-                    self.logger.error(f"Ошибка копирования {name} : {copy_proccess.stderr}")
+                    self.logger.error(f"Ошибка копирования {name} : {copy_process.stderr}")
                     sync_results["failed"] += 1
 
                 sync_results["total"] += 1
@@ -422,7 +429,6 @@ class AirflowRunner:
             if self._check_database_exists():
                 self.cleanup_old_database()
 
-
             # Создаем необходимые директории
             airflow_home_q = self._quote_wsl_path(self.wsl_airflow_home)
             directories = [
@@ -518,7 +524,7 @@ class AirflowRunner:
                 dags_loaded = []
                 for line in result.stdout.splitlines():
                     stripped = line.strip()
-                    if line.strip() and not line.startswith("-"):
+                    if stripped and not line.startswith("-"):
                         dags_loaded.append(stripped)
 
                 self.logger.info(f"Загружено DAG: {len(dags_loaded)}")
@@ -598,8 +604,8 @@ class AirflowRunner:
 
                 return process
             else:
-                 self.logger.error(f"{name} завершился сразу после запуска (код: {process.returncode})")
-                 return None
+                self.logger.error(f"{name} завершился сразу после запуска (код: {process.returncode})")
+                return None
 
         except Exception as e:
             self.logger.error(f"Ошибка запуска {name}: {e}")
@@ -693,7 +699,6 @@ class AirflowRunner:
         self.logger.info("API Server: http://localhost:8080")
         self.logger.info("Для остановки нажмите Ctrl+C")
 
-
         try:
             while True:
                 # Проверяем оба процесса каждые 5 секунд
@@ -740,7 +745,6 @@ def main():
         logging.getLogger("airflow_runner").error(f"Критическая ошибка: {e}")
         traceback.print_exc()
         sys.exit(1)
-
 
 
 if __name__ == "__main__":

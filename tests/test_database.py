@@ -1,12 +1,14 @@
-import unittest
-import tempfile
-import shutil
 import logging
-import pandas as pd
-import numpy as np
+import shutil
+import tempfile
+import unittest
 from pathlib import Path
-from src.database.database_manager import DatabaseManager
+
+import numpy as np
+import pandas as pd
+
 from src.database.dashboard_data_provider import DashboardDataProvider
+from src.database.database_manager import DatabaseManager
 
 class TestDatabaseManager(unittest.TestCase):
     """Тесты для модуля DatabaseManager"""

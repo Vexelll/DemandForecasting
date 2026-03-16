@@ -1,4 +1,4 @@
-# Конфигурация системы прогнозирования спроса Rossman
+# Конфигурация системы прогнозирования спроса Rossmann
 
 # Пути проекта
 paths:
@@ -19,35 +19,35 @@ data_files:
     sales_history_export: "processed/sales_history_export.csv"
   outputs:
     predictions: "outputs/predictions.csv"
-  database: "demand_forecasting.db"
 
 # Модель LightGBM
 model:
   # Общие параметры обучения
   random_state: 42
   train_time_ratio: 0.8
-  n_estimators_max: 5000
+  val_ratio: 0.15
+  n_estimators_max: 10000
   early_stopping_rounds: 500
   model_filename: "lgbm_final_model.pkl"
 
   # Пространство поиска гиперпараметров (Optuna)
   search_space:
-    lambda_l1: [0.1, 0.50]
-    lambda_l2: [0.1, 0.50]
+    lambda_l1: [0.0001, 10.0]
+    lambda_l2: [0.0001, 10.0]
     num_leaves: [31, 255]
     max_depth: [4, 15]
     min_data_in_leaf: [50, 500]
     feature_fraction: [0.4, 0.95]
     bagging_fraction: [0.4, 0.95]
     bagging_freq: [1, 7]
-    min_child_weight: [0.00001, 10.0]
-    learning_rate: [0.005, 0.3]
-    max_bin: [200, 255]
-    path_smooth: [1.0, 50.0]
+    min_child_weight: [0.001, 10.0]
+    learning_rate: [0.01, 0.3]
+    max_bin: [63, 255]
+    path_smooth: [0.0, 20.0]
 
   # Кросс-валидация
   cv:
-    n_splits: 3
+    n_splits: 5
     method: "TimeSeriesSplit"
 
   # Пороги оценки качества MAPE (%)
@@ -100,6 +100,7 @@ monitoring:
 
 # База данных
 database:
+  db_filename: "demand_forecasting.db"
   connection_timeout: 60
 
 # Дашборд

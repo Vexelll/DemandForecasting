@@ -1,10 +1,12 @@
-import plotly.graph_objects as go
-import plotly.express as px
-import pandas as pd
-import numpy as np
-import os
 import logging
+import os
 from functools import lru_cache
+
+import numpy as np
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+
 from config.settings import REPORTS_PATH, get_model_config, get_reporting_config
 
 logger = logging.getLogger(__name__)
@@ -45,7 +47,7 @@ LAYOUT_DEFAULTS = dict(
     )
 )
 
-# Градиентная палитра Viribis для горизонтальных bar chart
+# Градиентная палитра Viridis для горизонтальных bar chart
 VIRIDIS_PALETTE = px.colors.sequential.Viridis
 
 # Единые параметры для горизонтальной легенды
@@ -395,29 +397,30 @@ def create_error_distribution(data: pd.DataFrame) -> go.Figure:
 def _compute_adaptive_bins(data: np.ndarray) -> int:
     """Sturges/Freedman-Diaconis, клэмп 20-80 бинов"""
     n = len(data)
-
     sturges = int(np.ceil(1 + np.log2(max(n, 1))))
 
     if n < 50:
-        n_bins = sturges
+        return sturges
+
+    # Freedman-Diaconis
+    q75, q25 = np.percentile(data, [75, 25])
+    iqr = q75 - q25
+
+    if iqr < 1e-9:
+        # Вырожденный случай: почти одинаковые значения
+        fd_bins = 10
     else:
-        # Freedman-Diaconis
-        q75, q25 = np.percentile(data, [75, 25])
-        iqr = q75 - q25
+        bin_width = 2.0 * iqr * (n ** (-1.0 / 3.0))
+        data_range = float(np.max(data) - np.min(data))
+        fd_bins = int(np.ceil(data_range / bin_width))
 
-        if iqr < 1e-9:
-            # Вырожденный случай: все значения почти одинаковы
-            n_bins = 10
-        else:
-            bin_width = 2.0 * iqr * (n ** (-1.0 / 3.0))
-            data_range = float(np.max(data) - np.min(data))
-            fd_bins = int(np.ceil(data_range / bin_width))
+    bins = max(fd_bins, sturges)
 
-    return max(fd_bins, sturges)
+    return max(20, min(bins, 80))
 
 def _compute_kde(data: np.ndarray, n_points: int = 200) -> tuple:
     """Ручной KDE через гауссово ядро - без scipy.stats зависимости"""
-    KDE_SAMPLE_LIMIT = 10_000
+    KDE_SAMPLE_LIMIT = 10000
 
     n = len(data)
     rng = np.random.default_rng(seed=get_model_config().get("random_state", 42))
@@ -493,6 +496,10 @@ def create_store_comparison(full_data: pd.DataFrame, selected_store: int, start_
     # Топ-15 магазинов по средним продажам
     store_stats = grouped.sort_values("AvgSales", ascending=False).head(15)
 
+    # Если выбранный магазин не попал в топ-15 - добавляем его, иначе звёздочка пропадёт
+    if selected_store and selected_store in grouped.index and selected_store not in store_stats.index:
+        store_stats = pd.concat([store_stats, grouped.loc[[selected_store]]])
+
     if len(store_stats) == 0:
         return create_empty_chart("Нет данных для сравнения магазинов")
 
@@ -540,7 +547,8 @@ def create_store_comparison(full_data: pd.DataFrame, selected_store: int, start_
     ))
 
     # Подсветка выбранного магазина
-    if selected_store and selected_store in store_stats.index:
+    selected_in_top = selected_store and selected_store in store_stats.index
+    if selected_in_top:
         selected_idx = list(store_stats.index).index(selected_store)
         fig.add_trace(go.Scatter(
             x=[store_labels[selected_idx]],
@@ -561,10 +569,15 @@ def create_store_comparison(full_data: pd.DataFrame, selected_store: int, start_
             customdata=[store_stats.loc[selected_store, "MAPE"]]
         ))
 
+    # Если магазин был дотянут в список - отмечаем в заголовке
+    chart_title = "Топ-15 магазинов по средним продажам"
+    if len(store_stats) > 15 and selected_in_top:
+        chart_title += f" + магазин {selected_store}"
+
     _apply_common_layout(
         fig,
         title=dict(
-            text="Топ-15 магазинов по средним продажам",
+            text=chart_title,
             x=0.5,
             font=dict(size=16)
         ),
@@ -666,78 +679,6 @@ def _build_feature_importance_fig(path: str, mtime: float) -> go.Figure:
     logger.info(f"График важности признаков построен: {len(importance_df)} признаков из {path}")
 
     return fig
-
-def create_sales_trend_chart(data: pd.DataFrame) -> go.Figure:
-    """Дневные продажи + rolling mean для сглаживания шума"""
-    if len(data) == 0:
-        return create_empty_chart("Нет данных для анализа тренда")
-
-    # Группировка по дате
-    daily_sales = data.groupby("Date")["ActualSales"].sum().reset_index()
-    daily_sales = daily_sales.sort_values("Date")
-
-    fig = go.Figure()
-
-    # Линия фактических продаж
-    fig.add_trace(go.Scatter(
-        x=daily_sales["Date"],
-        y=daily_sales["ActualSales"],
-        mode="lines",
-        name="Фактические продажи",
-        line=dict(color=COLORS["histogram"], width=1.5),
-        opacity=0.6,
-        hovertemplate="<b>%{x|%d.%m.%Y}</b><br>Продажи: %{y:,.0f} €<extra></extra>"
-    ))
-
-    # Скользящее среднее (7 дней)
-    daily_sales["MovingAvg"] = daily_sales["ActualSales"].rolling(window=7, min_periods=1).mean()
-
-    fig.add_trace(go.Scatter(
-        x=daily_sales["Date"],
-        y=daily_sales["MovingAvg"],
-        mode="lines",
-        name="Скользящее среднее (7 дней)",
-        line=dict(color=COLORS["predicted"], width=2.5),
-        hovertemplate="<b>%{x|%d.%m.%Y}</b><br>Среднее (7д): %{y:,.0f} €<extra></extra>"
-    ))
-
-    # Расчет статистики тренда
-    total_sales = daily_sales["ActualSales"].sum()
-    avg_daily = daily_sales["ActualSales"].mean()
-    growth_rate = 0.0
-    if len(daily_sales) > 1 and daily_sales["ActualSales"].iloc[0] > 0:
-        growth_rate = ((daily_sales["ActualSales"].iloc[-1] / daily_sales["ActualSales"].iloc[0]) - 1) * 100
-
-    _apply_common_layout(
-        fig,
-        title=dict(
-            text=(
-                f"Тренд продаж"
-                f"<br><sub style='color:{COLORS["text_secondary"]}'>"
-                f"Объём: {total_sales:,.0f} €  |  "
-                f"Среднедневные: {avg_daily:,.0f} €  |  "
-                f"Рост: {growth_rate:.1f}%</sub>"
-            ),
-            x=0.5,
-            font=dict(size=16)
-        ),
-        xaxis=dict(
-            title="Дата",
-            tickformat="%d.%m.%Y",
-            gridcolor=COLORS["grid"]
-        ),
-        yaxis=dict(
-            title="Продажи, €",
-            tickformat=",",
-            gridcolor=COLORS["grid"]
-        ),
-        height=450,
-        hovermode="x unified",
-        legend=HORIZONTAL_LEGEND
-    )
-
-    return fig
-
 
 def create_data_table(data: pd.DataFrame) -> go.Figure:
     """Plotly Table: Store, Date, Actual, Predicted, Error, mape%"""
@@ -844,3 +785,137 @@ def create_info_chart(title: str, message: str) -> go.Figure:
 def create_empty_chart(message: str) -> go.Figure:
     """Пустой figure c текстом по центру"""
     return create_info_chart("Нет данных", message)
+
+def create_pipeline_runs_table(runs: list) -> go.Figure:
+    """Таблица последних запусков пайплайна"""
+    if not runs:
+        return create_info_chart("История запусков", "Нет данных о запусках пайплайна")
+
+    # Извлечение колонок из списка словарей
+    run_ids = [r.get("run_id", "-").replace("run_", "")[:15] for r in runs]
+    statuses = [r.get("status", "-") for r in runs]
+    started = []
+    for r in runs:
+        raw = r.get("started_at", "-")
+        try:
+            dt = pd.to_datetime(raw)
+            started.append(dt.strftime("%d.%m %H:%M"))
+        except Exception:
+            started.append(raw[:16])
+    durations = [f"{r.get("duration_seconds", 0):.0f}с" if r.get("duration_seconds") else "-" for r in runs]
+    records = [f"{r.get("records_processed", 0):,}" for r in runs]
+    mapes = [f"{r.get("mape", 0):.2f}%" if r.get("mape") else "-" for r in runs]
+
+    # Зеленый - success, красный - failed
+    status_colors = [
+        "rgba(39, 174, 96, 0.15)" if s == "success" else "rgba(231, 76, 60, 0.15)" for s in statuses
+    ]
+
+    fig = go.Figure(data=[go.Table(
+        header=dict(
+            values=["<b>ID</b>", "<b>Статус</b>", "<b>Дата</b>",
+                    "<b>Время</b>", "<b>Записей</b>", "<b>MAPE</b>"],
+            fill_color=COLORS["table_header"],
+            align="center",
+            font=dict(color="white", size=12, family="Segoe UI"),
+            height=40,
+            line_color="white"
+        ),
+        cells=dict(
+            values=[run_ids, statuses, started, durations, records, mapes],
+            fill_color=["white", status_colors, "white", "white", "white", "white"],
+            align="center",
+            font=dict(color=COLORS["text_primary"], size=11),
+            height=30,
+            line_color=COLORS["grid"]
+        )
+    )])
+
+    fig.update_layout(
+        title=dict(
+            text=f"Последние {len(runs)} запусков пайплайна",
+            x=0.5,
+            font=dict(size=14, color=COLORS["text_primary"])
+        ),
+        height=max(400, 120 + len(runs) * 35),
+        margin=dict(l=10, r=10, t=50, b=10)
+    )
+
+    return fig
+
+def create_metrics_trend_chart(metrics_history: list) -> go.Figure:
+    """Тренд mape/rmse по обучениям модели"""
+    if not metrics_history:
+        return create_info_chart("Тренд метрик модели", "Нет данных об обучении модели")
+
+    df = pd.DataFrame(metrics_history)
+
+    if "trained_at" not in df.columns:
+        return create_info_chart("Тренд метрик модели", "Некорректный формат данных")
+
+    df["trained_at"] = pd.to_datetime(df["trained_at"])
+    df = df.sort_values("trained_at")
+
+    fig = go.Figure()
+
+    # mape тренд
+    if "mape" in df.columns and df["mape"].notna().any():
+        fig.add_trace(go.Scatter(
+            x=df["trained_at"],
+            y=df["mape"],
+            mode="lines+markers",
+            name="MAPE (%)",
+            line=dict(color=COLORS["predicted"], width=2),
+            marker=dict(size=8, symbol="circle"),
+            text=[f"{v:.2f}%" for v in df["mape"]],
+            textposition="top center",
+            textfont=dict(size=11, color=COLORS["predicted"]),
+            fill="tozeroy",
+            fillcolor="rgba(231, 76, 60, 0.06)",
+            hovertemplate="<b>%{x|%d.%m.%Y %H:%M}</b><br>MAPE: %{y:.2f}%<extra></extra>"
+        ))
+
+    # rmse тренд на вторичной оси
+    if "rmse" in df.columns and df["rmse"].notna().any():
+        fig.add_trace(go.Scatter(
+            x=df["trained_at"],
+            y=df["rmse"],
+            mode="lines+markers",
+            name="RMSE (€)",
+            line=dict(color=COLORS["actual"], width=2),
+            marker=dict(size=8, symbol="diamond"),
+            text=[f"{v:,.0f}€" for v in df["rmse"]],
+            textposition="bottom center",
+            textfont=dict(size=11, color=COLORS["actual"]),
+            yaxis="y2",
+            hovertemplate="<b>%{x|%d.%m.%Y %H:%M}</b><br>RMSE: %{y:,.0f} €<extra></extra>"
+        ))
+
+    _apply_common_layout(
+        fig,
+        title=dict(
+            text="Динамика качества модели по обучениям",
+            x=0.5,
+            font=dict(size=16)
+        ),
+        xaxis=dict(
+            title="Дата обучения",
+            tickformat="%d.%m.%Y",
+            gridcolor=COLORS["grid"]
+        ),
+        yaxis=dict(
+            title="MAPE (%)",
+            gridcolor=COLORS["grid"],
+            side="left"
+        ),
+        yaxis2=dict(
+            title="RMSE (€)",
+            overlaying="y",
+            side="right",
+            tickformat=","
+        ),
+        legend=HORIZONTAL_LEGEND,
+        height=450
+    )
+
+    return fig

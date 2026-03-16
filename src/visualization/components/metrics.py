@@ -1,12 +1,12 @@
 import logging
-from typing import Dict, Any, List
+from typing import Any
 
-from dash import html
 import numpy as np
+from dash import html
 
 logger = logging.getLogger(__name__)
 
-def calculate_metrics(data) -> Dict[str, Any]:
+def calculate_metrics(data) -> dict[str, Any]:
     """MAE, MAPE, RMSE, MedAE, R² + цветовая оценка качества"""
     # Базовые метрики по умолчанию
     default_metrics = {
@@ -65,7 +65,7 @@ def calculate_metrics(data) -> Dict[str, Any]:
 
     return metrics
 
-def create_metric_cards(metrics: Dict[str, Any]) -> List[html.Div]:
+def create_metric_cards(metrics: dict[str, Any]) -> list[html.Div]:
     """Dash html.div карточки: значение + подпись + цвет по порогу"""
     no_data = metrics.get("data_points", 0) == 0
 
@@ -131,33 +131,11 @@ def create_metric_cards(metrics: Dict[str, Any]) -> List[html.Div]:
 
     return [mape_card, mae_card, rmse_card, sales_card]
 
-def _format_metric_value(value: str) -> str:
-    """Число -> строка: 12345.6 -> 12,345.60 €, проценты с % и т.д."""
-    # Значение-заглушка - возвращаем как есть
-    if value in ("—", "-", ""):
-        return value
-
-    try:
-        # Извлечение числовой части
-        clean = value.replace("€", "").replace("%", "").replace(",", "").replace(" ", "").strip()
-        numeric = float(clean)
-
-        if "%" in value:
-            return f"{numeric:.1f}%"
-        elif "€" in value:
-            return f"{numeric:,.0f} €".replace(",", " ")
-        else:
-            return f"{numeric:,.0f}".replace(",", " ")
-    except (ValueError, TypeError):
-        return str(value)
-
 def _create_metric_card(title: str, value: str, color: str, description: str = None) -> html.Div:
     """Одна карточка: заголовок + значение + цветовая полоска"""
-    formatted_value = _format_metric_value(value)
-
     children = [
         html.Div(title, className="metric-title"),
-        html.Div(formatted_value, className="metric-value", style={"color": color}),
+        html.Div(value, className="metric-value", style={"color": color}),
     ]
     if description:
         children.append(html.Div(description, className="metric-description"))

@@ -107,16 +107,19 @@ document.addEventListener("DOMContentLoaded", function () {
     var controls = document.querySelectorAll(
       ".control-group select, .control-group input, .control-group button",
     );
+    var root = document.documentElement;
+
     controls.forEach(function (control) {
       control.addEventListener("focus", function () {
-        this.parentElement.style.backgroundColor = "#f8f9fa";
-        this.parentElement.style.borderLeft = "3px solid #3498db";
-        this.parentElement.style.transition = "all 0.3s ease";
+        var bgColor = getComputedStyle(root).getPropertyValue("--color-bg-page").trim();
+        var accentColor = getComputedStyle(root).getPropertyValue("--color-accent-blue").trim();
+        this.parentElement.style.backgroundColor = bgColor;
+        this.parentElement.style.borderLeftColor = accentColor;
       });
 
       control.addEventListener("blur", function () {
         this.parentElement.style.backgroundColor = "";
-        this.parentElement.style.borderLeft = "";
+        this.parentElement.style.borderLeftColor = "";
       });
     });
   }
@@ -208,6 +211,11 @@ document.addEventListener("DOMContentLoaded", function () {
         "font-size: 14px; line-height: 1.4;";
       document.body.appendChild(errorDiv);
 
+      // Текстовый элемент для сообщения
+      var textSpan = document.createElement("span");
+      textSpan.className = "error-message-text";
+      errorDiv.appendChild(textSpan);
+
       // Кнопка закрытия
       var closeBtn = document.createElement("button");
       closeBtn.textContent = "×";
@@ -221,8 +229,8 @@ document.addEventListener("DOMContentLoaded", function () {
       errorDiv.appendChild(closeBtn);
     }
 
-    // Устанавливаем текст (сохраняя кнопку закрытия)
-    errorDiv.childNodes[0].textContent = message;
+    // Обновляем текст в span, кнопка закрытия не затрагивается
+    errorDiv.querySelector(".error-message-text").textContent = message;
     errorDiv.style.display = "block";
 
     // Автоматическое скрытие через 5 секунд

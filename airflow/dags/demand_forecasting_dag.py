@@ -4,20 +4,22 @@ import os
 project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, project_root)
 
-import logging
-from datetime import datetime, timedelta
-from airflow import DAG
-from airflow.models import Variable
-from airflow.providers.standard.operators.python import PythonOperator, BranchPythonOperator
-from airflow.providers.smtp.operators.smtp import EmailOperator
-from airflow.providers.standard.operators.empty import EmptyOperator
-from src.data.data_quality_checker import DataQualityChecker
-from src.pipeline.pipeline_operations import PipelineOperations
-from config.settings import get_pipeline_config
-
 dags_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, dags_dir)
+
+import logging
+from datetime import datetime, timedelta
+
+from airflow import DAG
+from airflow.models import Variable
+from airflow.providers.smtp.operators.smtp import EmailOperator
+from airflow.providers.standard.operators.empty import EmptyOperator
+from airflow.providers.standard.operators.python import PythonOperator, BranchPythonOperator
+
+from config.settings import get_pipeline_config
 from monitoring.dag_monitor import DAGMonitor
+from src.data.data_quality_checker import DataQualityChecker
+from src.pipeline.pipeline_operations import PipelineOperations
 
 class DemandForecastingPipeline:
     def __init__(self):
@@ -26,7 +28,6 @@ class DemandForecastingPipeline:
         self._operations = None
         self._monitor = None
 
-        # Загрузка параметров пайплайна из конфигурации
         pipeline_cfg = get_pipeline_config()
 
         self.default_args = {
@@ -37,9 +38,8 @@ class DemandForecastingPipeline:
             "email_on_retry": pipeline_cfg.get("email_on_retry", False),
             "retries": pipeline_cfg.get("retries", 2),
             "retry_delay": timedelta(minutes=pipeline_cfg.get("retry_delay_minutes", 5)),
-            "max_active_runs": pipeline_cfg.get("max_active_runs", 1)
+            "max_active_runs": self.on_failure_callback
         }
-        self.cleaned_data = None
 
     @property
     def quality_checker(self):
@@ -57,10 +57,38 @@ class DemandForecastingPipeline:
 
     @property
     def monitor(self):
-        """Lazy init"""
+        """Lazy init - мониторинг DAG"""
         if self._monitor is None:
             self._monitor = DAGMonitor()
         return self._monitor
+
+    def start_monitoring(self) -> None:
+        """Первая задача DAG - запуск таймера мониторинга"""
+        self.monitor.start_timer()
+        self.logger.info("Мониторинг: таймер запущен")
+
+    def log_dag_result(self, **context) -> None:
+        """Последняя задача DAG - фиксирует результат запуска + генерит отчет"""
+        dag_run = context.get("dag_run")
+        dag_id = dag_run.dag_id if dag_run else "unknown"
+
+        # Статус по состоянию задач в текущем запуске
+        task_instances = dag_run.get_task_instances() if dag_run else []
+        failed = [ti for ti in task_instances if ti.state == "failed"]
+        executed = [ti for ti in task_instances if ti.state in ("success", "failed", "skipped")]
+
+        status = "failed" if failed else "success"
+        error_msg = ", ".join(ti.task_id for ti in failed) if failed else None
+
+        self.monitor.log_dag_run(
+            dag_name=dag_id,
+            status=status,
+            tasks_executed=len(executed),
+            error=error_msg
+        )
+        self.monitor.generate_performance_report()
+
+        self.logger.info(f"Мониторинг: {dag_id} -> {status}, задач выполнено: {len(executed)}")
 
     def check_new_data(self) -> str:
         """Проверяет mtime train.csv"""
@@ -77,7 +105,7 @@ class DemandForecastingPipeline:
             self.logger.error(f"Ошибка проверки данных: {e}")
             return "preprocess_data"
 
-    def decide_retraining_path(self, **context) -> str:
+    def decide_retraining_path(self) -> str:
         """Если модель устарела -> branch на retrain"""
         self.logger.info("Проверка необходимости переобучения...")
 
@@ -152,7 +180,27 @@ class DemandForecastingPipeline:
     def full_retrain_model(self) -> str:
         """Еженедельно: preprocess -> features -> history -> train"""
         self.logger.info("Полное переобучение модели...")
-        return self.retrain_model()
+
+        steps = [
+            ("preprocess_data", self.operations.preprocess_data),
+            ("create_features", self.operations.create_features),
+            ("update_sales_history", self.operations.update_sales_history),
+            ("train_model", self.operations.train_model),
+        ]
+
+        for step_name, step_fn in steps:
+            try:
+                success = step_fn()
+                if not success:
+                    self.logger.error(f"Шаг {step_name} завершился неудачей")
+                    return "failer"
+                self.logger.info(f"Шаг {step_name} выполнен")
+            except Exception as e:
+                self.logger.error(f"Ошибка на шаге {step_name}: {e}")
+                return "failure"
+
+        self.logger.info("Полное переобучение завершено")
+        return "success"
 
     def generate_predictions(self) -> str:
         """Задача: ETL predict"""
@@ -184,32 +232,36 @@ class DemandForecastingPipeline:
             return "failure"
 
     def on_failure_callback(self, context: dict) -> None:
-        """on_failure_callback для всех задач"""
-        error = context.get("exception")
+        """on_failure_callback - task-level через default_args"""
         task_id = context.get("task_instance").task_id if context.get("task_instance") else "unknown"
+        error = context.get("exception")
 
         self.logger.error(f"Ошибка в задаче {task_id}: {error}")
 
     def create_dag(self) -> DAG:
-        """Ежедневный DAG: check data -> predict -> validate"""
+        """Ежедневный DAG: monitor -> check data -> predict -> validate -> monitor"""
         pipeline_cfg = get_pipeline_config()
         schedules = pipeline_cfg.get("schedules", {})
         timeouts = pipeline_cfg.get("execution_timeouts", {})
 
         with DAG(
-            "demand_forecasting_pipeline",
+            pipeline_cfg.get("dag_id", "demand_forecasting_pipeline"),
             default_args=self.default_args,
             description="Автоматизированный пайплайн прогнозирования спроса",
             schedule=schedules.get("daily_forecast", "0 2 * * *"),
-            max_active_runs=1,
+            max_active_runs=pipeline_cfg.get("max_active_runs", 1),
             max_active_tasks=1,
             catchup=False,
-            tags=["retail", "forecasting"],
-            on_failure_callback=self.on_failure_callback
+            tags=["retail", "forecasting"]
         ) as dag:
 
-            # Старт
             start = EmptyOperator(task_id="start")
+
+            # Мониторинг - старт таймера
+            start_mon = PythonOperator(
+                task_id="start_monitoring",
+                python_callable=self.start_monitoring
+            )
 
             # Проверка данных
             check_data = BranchPythonOperator(
@@ -272,10 +324,17 @@ class DemandForecastingPipeline:
                 html_content="<h3>Пайплайн выполнен успешно</h3>"
             )
 
+            # Мониторинг - фиксация результата (all_done - срабатывает на любой ветке)
+            log_result = PythonOperator(
+                task_id="log_dag_result",
+                python_callable=self.log_dag_result,
+                trigger_rule="all_done"
+            )
+
             end = EmptyOperator(task_id="end")
 
             # Определение зависимостей
-            start >> check_data
+            start >> start_mon >> check_data
 
             check_data >> [preprocess, skip_processing]
 
@@ -285,35 +344,48 @@ class DemandForecastingPipeline:
             decide_retraining >> [retrain, skip_retraining]
             [retrain, skip_retraining] >> generate_forecasts
 
-            generate_forecasts >> validate >> success_notification >> end
+            generate_forecasts >> validate >> success_notification >> log_result >> end
 
-            skip_processing >> end
+            skip_processing >> log_result
 
             return dag
 
     def create_retraining_dag(self) -> DAG:
-        """Еженедельный DAG: полный retrain + predict"""
+        """Еженедельный DAG: monitor -> полный retrain -> monitor"""
+        pipeline_cfg = get_pipeline_config()
         schedules = get_pipeline_config().get("schedules", {})
 
         with DAG(
-            "weekly_model_retraining",
+            f"{pipeline_cfg.get("dag_id", "demand_forecasting")}_weekly_retraining",
             default_args=self.default_args,
             description="Еженедельное переобучение модели",
             schedule=schedules.get("weekly_retraining", "0 3 * * 0"),
+            max_active_runs=pipeline_cfg.get("max_active_runs", 1),
             catchup=False,
             tags=["retraining"]
         ) as dag:
 
             start = EmptyOperator(task_id="start")
 
+            start_mon = PythonOperator(
+                task_id="start_monitoring",
+                python_callable=self.start_monitoring
+            )
+
             full_retrain = PythonOperator(
                 task_id="full_model_retraining",
                 python_callable=self.full_retrain_model
             )
 
+            log_result = PythonOperator(
+                task_id="log_dag_result",
+                python_callable=self.log_dag_result,
+                trigger_rule="all_done"
+            )
+
             end = EmptyOperator(task_id="end")
 
-            start >> full_retrain >> end
+            start >> start_mon >> full_retrain >> log_result >> end
 
             return dag
 

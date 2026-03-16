@@ -1,8 +1,10 @@
 import logging
-import pandas as pd
-import numpy as np
-from typing import Optional, Dict, Any, List
 from datetime import datetime
+from typing import Any
+
+import numpy as np
+import pandas as pd
+
 from src.database.database_manager import DatabaseManager
 
 
@@ -23,7 +25,7 @@ class DashboardDataProvider:
             self.data_source = "unavailable"
             self.logger.warning("DashboardDataProvider: БД недоступна, данные из CSV не загружаются. Используются демо-данные")
 
-    def load_predictions(self, run_id: Optional[str] = None) -> pd.DataFrame:
+    def load_predictions(self, run_id: str | None = None) -> pd.DataFrame:
         """Последний run или конкретный run_id -> DataFrame для графиков"""
         if self.db is None:
             self.logger.warning("БД недоступна, возвращаются демо-данные")
@@ -84,7 +86,7 @@ class DashboardDataProvider:
             self.logger.error(f"Ошибка загрузки сравнения: {e}")
             return pd.DataFrame()
 
-    def get_available_runs(self, limit: int = 20) -> List[Dict[str, Any]]:
+    def get_available_runs(self, limit: int = 20) -> list[dict[str, Any]]:
         """Список run_id с мета: записи, даты, avg mape"""
         if self.db is None:
             return []
@@ -95,7 +97,7 @@ class DashboardDataProvider:
             self.logger.error(f"Ошибка получения списка запусков: {e}")
             return []
 
-    def get_pipeline_history(self, limit: int = 20) -> List[Dict[str, Any]]:
+    def get_pipeline_history(self, limit: int = 20) -> list[dict[str, Any]]:
         """pipeline_runs для вкладки мониторинга"""
         if self.db is None:
             return []
@@ -106,7 +108,7 @@ class DashboardDataProvider:
             self.logger.error(f"Ошибка получения истории пайплайна: {e}")
             return []
 
-    def get_model_metrics_trend(self, limit: int = 20) -> List[Dict[str, Any]]:
+    def get_model_metrics_trend(self, limit: int = 20) -> list[dict[str, Any]]:
         """mape/rmse по обучениям для графиков тренда"""
         if self.db is None:
             return []
@@ -114,10 +116,10 @@ class DashboardDataProvider:
         try:
             return self.db.get_model_metrics_history(limit=limit)
         except Exception as e:
-            self.logger.error(f"Ошибка получения истории пайплайна: {e}")
+            self.logger.error(f"Ошибка получения истории метрик: {e}")
             return []
 
-    def get_data_source_info(self) -> Dict[str, Any]:
+    def get_data_source_info(self) -> dict[str, Any]:
         """Для футера: источник, размер БД, кол-во записей"""
         info = {
             "source": self.data_source,
@@ -175,6 +177,8 @@ class DashboardDataProvider:
         """Синтетика для тестирования дашборда, когда БД пуста"""
         self.logger.info("Генерация демо-данных для дашборда")
 
+        rng = np.random.default_rng(seed=42)
+
         dates = pd.date_range(start="2024-01-01", end="2024-03-31", freq="D")
         num_stores = 2
         all_rows = []
@@ -183,10 +187,10 @@ class DashboardDataProvider:
             base_sales = 8000 + store_id * 2000
             seasonal_effect = 2000 * np.sin(2 * np.pi * np.arange(len(dates)) / 30)
             trend = 50 * np.arange(len(dates))
-            noise = np.random.normal(0, 500, len(dates))
+            noise = rng.normal(0, 500, len(dates))
 
             actual_sales = base_sales + seasonal_effect + trend + noise
-            predicted_sales = actual_sales + np.random.normal(0, 800, len(dates))
+            predicted_sales = actual_sales + rng.normal(0, 800, len(dates))
 
             store_df = pd.DataFrame({
                 "Store": store_id,

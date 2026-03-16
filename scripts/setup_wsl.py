@@ -5,59 +5,30 @@ from pathlib import Path
 
 
 class WSLSetup:
-    """Класс для настройки WSL окружения"""
+    """Настройка WSL окружения: venv + зависимости + Airflow init + структура директорий"""
 
     def __init__(self):
+        self.logger = logging.getLogger(__name__)
         self.project_root = Path(__file__).parent.parent
         self.wsl_path = self._convert_to_wsl_path(self.project_root)
-        self.logger = self._setup_logger()
 
-    def _setup_logger(self):
-        """Настройка системы логирования"""
-        logger = logging.getLogger(__name__)
-        logger.setLevel(logging.INFO)
-
-        if not logger.handlers:
-            # Консольный handler
-            console_handler = logging.StreamHandler()
-            console_handler.setLevel(logging.INFO)
-
-            # Форматтер
-            formatter = logging.Formatter(
-                "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-                datefmt="%Y-%m-%d %H:%M:%S"
-            )
-            console_handler.setFormatter(formatter)
-            logger.addHandler(console_handler)
-
-            # Файловый handler
-            log_file = self.project_root / "logs/wsl_setup.log"
-            log_file.parent.mkdir(exist_ok=True, parents=True)
-
-            file_handler = logging.FileHandler(log_file, encoding="utf-8")
-            file_handler.setLevel(logging.DEBUG)
-            file_handler.setFormatter(formatter)
-            logger.addHandler(file_handler)
-
-        return logger
-
-    def _convert_to_wsl_path(self, windows_path):
-        """Конвертация Windows пути в WSL путь"""
+    @staticmethod
+    def _convert_to_wsl_path(windows_path: Path) -> str:
+        """C\\foo\\bar -> /mnt/с/foo/bar"""
         path_str = str(windows_path)
 
-        # Конвертация для любых дисков
         if ":" in path_str and path_str[1:3] == ":\\":
             drive_letter = path_str[0].lower()
             remaining_path = path_str[3:].replace("\\", "/")
             return f"/mnt/{drive_letter}/{remaining_path}"
-        else:
-            # Уже WSL путь или относительный
-            return path_str.replace("\\", "/")
 
-    def _run_wsl_command(self, command, timeout=900):
-        """Выполнение WSL команд"""
+        # Уже WSL путь или относительный
+        return path_str.replace("\\", "/")
+
+    def _run_wsl_command(self, command: str, timeout: int = 900) -> bool:
+        """Выполнение WSL команды, True = успех"""
         try:
-            self.logger.debug(f"Выполнение WSL команды: {command[:100]}...")
+            self.logger.debug(f"WSL: {command[:100]}...")
 
             result = subprocess.run(
                 ["wsl", "bash", "-c", command],
@@ -76,74 +47,110 @@ class WSLSetup:
         except subprocess.TimeoutExpired:
             self.logger.error(f"Таймаут выполнения команды")
             return False
-        except subprocess.CalledProcessError as e:
-            self.logger.error(f"Ошибка выполнения команды: {e}")
+        except FileNotFoundError:
+            self.logger.error(f"wsl.exe не найден - WSL не установлен")
             return False
         except Exception as e:
             self.logger.error(f"Неожиданная ошибка: {e}")
             return False
 
-    def check_wsl_status(self):
-        """Проверка статуса WSL"""
+    def check_wsl_status(self) -> bool:
+        """Проверка установки WSL"""
         self.logger.info("Проверка установки WSL...")
 
         try:
-            subprocess.run(["wsl", "--status"], capture_output=True, check=True, timeout=30)
+            result = subprocess.run(
+                ["wsl", "--status"],
+                capture_output=True,
+                check=True,
+                timeout=30
+            )
+
+            if result.returncode != 0:
+                self.logger.error("WSL не готов к работе")
+                return False
+
             self.logger.info("WSL статус проверен")
             return True
 
-        except subprocess.CalledProcessError:
-            self.logger.error("Ошибка проверки WSL")
+        except FileNotFoundError:
+            self.logger.error("wsl.exe не найден - WSL не установлен")
             return False
         except subprocess.TimeoutExpired:
             self.logger.error("Таймаут проверки WSL")
             return False
 
-    def setup_python_environment(self):
-        """Настройка Python окружения"""
+    def setup_directory_structure(self) -> bool:
+        """Создание структуры директорий в WSL: airflow/dags/monitoring, src, config, logs"""
+        self.logger.info("Создание структуры директорий...")
+
+        dirs = [
+            f"{self.wsl_path}/airflow/dags/monitoring",
+            f"{self.wsl_path}/airflow/logs",
+            f"{self.wsl_path}/data/raw",
+            f"{self.wsl_path}/data/processed",
+            f"{self.wsl_path}/data/outputs",
+            f"{self.wsl_path}/models",
+            f"{self.wsl_path}/reports",
+            f"{self.wsl_path}/logs"
+        ]
+
+        mkdir_cmd = "mkdir -p " + " ".join(dirs)
+        if not self._run_wsl_command(mkdir_cmd, timeout=30):
+            return False
+
+        self.logger.info("Структура директорий создана")
+        return True
+
+    def setup_python_environment(self) -> bool:
+        """Настройка виртуального окружения"""
         self.logger.info("Настройка Python окружения...")
 
-        # Создаем виртуальное окружение
         if not self._run_wsl_command(f"cd {self.wsl_path} && python3 -m venv .venv", timeout=300):
             return False
 
         self.logger.info("Python окружение настроено")
         return True
 
-    def install_python_dependencies(self):
-        """Установка Python зависимостей"""
+    def install_python_dependencies(self) -> bool:
+        """pip install -r requirements.txt в venv"""
         self.logger.info("Установка Python зависимостей...")
 
-        # Устанавливаем зависимости через pip из venv
-        command = f"cd {self.wsl_path} && .venv/bin/pip install -r requirements.txt"
+        command = f"cd {self.wsl_path} && .venv/bin/pip install --upgrade pip && .venv/bin/pip install -r requirements.txt"
         if not self._run_wsl_command(command, timeout=1000):
             return False
 
         self.logger.info("Python зависимости установлены")
         return True
 
-    def run_setup(self):
-        """Основной метод настройки"""
+    def run_setup(self) -> bool:
+        """Полная настройка: WSL -> директории -> venv -> pip"""
         self.logger.info("Настройка WSL окружения для системы прогнозирования спроса")
 
-        if not self.check_wsl_status():
-            self.logger.error("WSL не установлен. Установите WSL2 перед продолжением")
-            return False
+        steps = [
+            ("Проверка WSL", self.check_wsl_status),
+            ("Структура директорий", self.setup_directory_structure),
+            ("Python окружение", self.setup_python_environment),
+            ("Python зависимости", self.install_python_dependencies)
+        ]
 
-        if not self.setup_python_environment():
-            self.logger.error("Ошибка настройки Python окружения")
-            return False
+        for step_name, step_fn in steps:
+            if not step_fn():
+                self.logger.error(f"ошибка на шаге: {step_name}")
+                return False
+            self.logger.info(f"Шаг завершен: {step_name}")
 
-        if not self.install_python_dependencies():
-            self.logger.error("Ошибка установки Python зависимостей")
-            return False
-
-        self.logger.info("Настройка WSL окружения завершена успешно")
+        self.logger.info("Настройка WSL окружения завершена")
         return True
-
 
 def main():
     """Точка входа скрипта настройки"""
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
+    )
+
     try:
         setup = WSLSetup()
         success = setup.run_setup()
@@ -154,10 +161,10 @@ def main():
             print("Ошибка настройки WSL окружения")
             sys.exit(1)
     except KeyboardInterrupt:
-        logging.getLogger("wsl_setup").info("Настройка прервана пользователем")
+        logging.getLogger(__name__).info("Настройка прервана пользователем")
         sys.exit(0)
     except Exception as e:
-        logging.getLogger("wsl_setup").error(f"Критическая ошибка: {e}")
+        logging.getLogger(__name__).error(f"Критическая ошибка: {e}")
         sys.exit(1)
 
 

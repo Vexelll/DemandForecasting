@@ -1,16 +1,17 @@
+import json
+import logging
+from typing import Any
+
 import matplotlib
 matplotlib.use("Agg")
-
-import numpy as np
-from scipy import stats
-from statsmodels.tsa.stattools import acf
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
-from typing import Dict, Any, List, Optional, Union
-from config.settings import REPORTS_PATH, get_model_config, get_reporting_config, get_dashboard_config
-import logging
-import json
+from scipy import stats
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from statsmodels.tsa.stattools import acf
+
+from config.settings import REPORTS_PATH, get_dashboard_config, get_model_config, get_reporting_config
 
 plt.style.use(get_dashboard_config().get("plot_style", "seaborn-v0_8-whitegrid"))
 
@@ -20,6 +21,9 @@ class BaseModels:
         self.feature_importance: Optional[pd.DataFrame] = None
         self.model: Optional[Any] = None
         self.logger = logging.getLogger(self.__class__.__name__)
+
+        plot_style = get_dashboard_config().get("plot_style", "seaborn-v0_8-whitegrid")
+        plt.style.use(plot_style)
 
     def _savefig(self, filepath) -> None:
         """Общий savefig с dpi/bbox из конфига"""
@@ -31,7 +35,7 @@ class BaseModels:
             facecolor=report_cfg.get("plot_facecolor", "white")
         )
 
-    def calculate_metrics(self, y_true: Union[np.ndarray, pd.Series, List[float]], y_pred: Union[np.ndarray, pd.Series, List[float]]) -> Dict[str, float]:
+    def calculate_metrics(self, y_true: np.ndarray | pd.Series | list[float], y_pred: np.ndarray | pd.Series | list[float]) -> dict[str, float]:
         """mae, rmse, mape, rmspe, r2, medae, bias, maxerror"""
         y_true_array = np.array(y_true)
         y_pred_array = np.array(y_pred)
@@ -73,10 +77,9 @@ class BaseModels:
             return "#27AE60" # Зелёный - отличное качество
         if mape < good:
             return "#F39C12" # Оранжевый - хорошее качество
-        else:
-            return "#E74C3C" # Красный - требует улучшения
+        return "#E74C3C" # Красный - требует улучшения
 
-    def plot_predictions(self, y_true: Union[np.ndarray, pd.Series, List[float]], y_pred: Union[np.ndarray, pd.Series, List[float]], title: str, store_id: Optional[int] = None, sample_size: int = 100) -> None:
+    def plot_predictions(self, y_true: np.ndarray | pd.Series | list[float], y_pred: np.ndarray | pd.Series | list[float], title: str, store_id: int | None = None, sample_size: int = 100) -> None:
         """Факт vs прогноз + график ошибок внизу"""
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), gridspec_kw={"height_ratios": [3, 1]})
 
@@ -126,7 +129,7 @@ class BaseModels:
         self._savefig(REPORTS_PATH / filename)
         plt.close()
 
-    def plot_residuals(self, y_true: Union[np.ndarray, pd.Series, List[float]], y_pred: Union[np.ndarray, pd.Series, List[float]], title: str, store_ids: Optional[np.ndarray] = None) -> None:
+    def plot_residuals(self, y_true: np.ndarray | pd.Series | list[float], y_pred: np.ndarray | pd.Series | list[float], title: str, store_ids: np.ndarray | None = None) -> None:
         """6 графиков: scatter, histogram, Q-Q, ACF, CDF, boxplot по диапазонам"""
         residuals = np.array(y_true) - np.array(y_pred)
         metrics = self.calculate_metrics(y_true, y_pred)
@@ -138,14 +141,14 @@ class BaseModels:
         colors = ["#3498db", "#e74c3c", "#2ecc71", "#9b59b6", "#f39c12"]
 
         # 1. Остатки vs Прогноз
-        axes[0,0].scatter(y_pred, residuals, alpha=0.6, color=colors[0], s=50)
-        axes[0,0].axhline(y=0, color=colors[1], linestyle="--", linewidth=2, alpha=0.8)
-        axes[0,0].set_xlabel("Прогнозируемые продажи, €", fontsize=11)
-        axes[0,0].set_ylabel("Остатки, €", fontsize=11)
-        axes[0,0].set_title("Остатки vs Прогноз", fontsize=13, fontweight="bold")
-        axes[0,0].grid(True, alpha=0.3)
+        axes[0, 0].scatter(y_pred, residuals, alpha=0.6, color=colors[0], s=50)
+        axes[0, 0].axhline(y=0, color=colors[1], linestyle="--", linewidth=2, alpha=0.8)
+        axes[0, 0].set_xlabel("Прогнозируемые продажи, €", fontsize=11)
+        axes[0, 0].set_ylabel("Остатки, €", fontsize=11)
+        axes[0, 0].set_title("Остатки vs Прогноз", fontsize=13, fontweight="bold")
+        axes[0, 0].grid(True, alpha=0.3)
 
-        # Добавление линии тренда
+        # Линия тренда
         z = np.polyfit(y_pred, residuals, 1)
         p = np.poly1d(z)
         y_pred_sorted = np.sort(y_pred)
@@ -224,14 +227,13 @@ class BaseModels:
         axes[1, 2].tick_params(axis="x", rotation=15)
         axes[1, 2].grid(True, alpha=0.3, axis="y")
 
-
         plt.tight_layout(rect=[0, 0, 1, 0.96])
 
         filename = f"residuals_analysis_{title.replace(" ", "_")}.png"
         self._savefig(REPORTS_PATH / filename)
         plt.close()
 
-    def _plot_autocorrelation(self, ax, residuals: np.ndarray, store_ids: Optional[np.ndarray], colors: List[str]) -> None:
+    def _plot_autocorrelation(self, ax, residuals: np.ndarray, store_ids: np.ndarray | None, colors: list[str]) -> None:
         """ACF по магазинам (усреднение) - ищем недельный/месячный паттерн"""
         max_lags = 60 # Дней
 
@@ -288,25 +290,25 @@ class BaseModels:
 
         ax.fill_between(lags, -ci, ci, alpha=0.1, color=colors[1])
 
-        # Помечаем недельный (7д) и месячный (28д) лаги
+        # Помечаем недельный (7д), двухнедельный (14д) и месячный (28д) лаги
         for key_lag, label in [(7, "7д"), (14, "14д"), (28, "28д")]:
             if key_lag < len(mean_acf_values):
                 acf_at_lag = mean_acf_values[key_lag]
-                maker_color = colors[1] if abs(acf_at_lag) > ci else colors[2]
-                ax.plot(key_lag, acf_at_lag, "v", color=maker_color, markersize=8, zorder=5)
+                marker_color = colors[1] if abs(acf_at_lag) > ci else colors[2]
+                ax.plot(key_lag, acf_at_lag, "v", color=marker_color, markersize=8, zorder=5)
                 ax.annotate(f"{label}\n{acf_at_lag:.3f}", xy=(key_lag, acf_at_lag), xytext=(key_lag + 2, acf_at_lag + 0.03), fontsize=8, fontweight="bold", arrowprops=dict(arrowstyle="-", color="gray", lw=0.5))
 
         if store_ids is not None and n_stores_used > 0:
             ax.set_title(f"Автокорреляция остатков\n(средняя по {n_stores_used} магазинам)", fontsize=13, fontweight="bold")
         else:
-            ax.set_title("Автокорреляция остатков", fontsize=13, alpha=0.3)
+            ax.set_title("Автокорреляция остатков", fontsize=13, fontweight="bold")
 
         ax.set_xlabel("Лаг (дни)", fontsize=11)
         ax.set_ylabel("ACF", fontsize=11)
         ax.legend(fontsize=9, loc="upper right")
         ax.grid(True, alpha=0.3)
 
-    def plot_feature_importance(self, feature_names: List[str], importance_scores: Optional[np.ndarray] = None, top_n: Optional[int] = None) -> None:
+    def plot_feature_importance(self, feature_names: list[str], importance_scores: np.ndarray | None = None, top_n: int | None = None) -> None:
         """Горизонтальный barh - top N признаков по importance"""
         if top_n is None:
             top_n = get_reporting_config().get("feature_importance_top_n", 20)
@@ -363,7 +365,7 @@ class BaseModels:
         self.logger.info(f"График важности признаков сохранен: {REPORTS_PATH / filename}")
         self.logger.info(f"Данные важности признаков сохранены: {importance_data_path}")
 
-    def plot_metrics_comparison(self, metrics_dict: Dict[str, Dict[str, float]], title: str ="Сравнение моделей") -> None:
+    def plot_metrics_comparison(self, metrics_dict: dict[str, dict[str, float]], title: str ="Сравнение моделей") -> None:
         """4 барчарта рядом: mape, r2, rmse, rmspe"""
         models = list(metrics_dict.keys())
         metrics_to_plot = ["MAPE", "R2", "RMSE", "RMSPE"]
@@ -400,14 +402,23 @@ class BaseModels:
         self._savefig(REPORTS_PATH / filename)
         plt.close()
 
-    def save_metrics(self, metrics: Dict[str, Any], filename: str = "model_metrics.json") -> None:
-        """Метрики -> json, numpy типы -> python native"""
-        metrics_serializable = {}
-        for key, value in metrics.items():
-            if isinstance(value, (np.integer, np.floating)):
-                metrics_serializable[key] = float(value)
+    @staticmethod
+    def _to_serializable(data: dict) -> dict:
+        """numpy типы -> python native для json.dump"""
+        result = {}
+        for key, value in data.items():
+            if isinstance(value, np.integer):
+                result[key] = int(value)
+            elif isinstance(value, np.floating):
+                result[key] = float(value)
+            elif isinstance(value, np.bool_):
+                result[key] = bool(value)
             else:
-                metrics_serializable[key] = value
+                result[key] = value
+        return result
+
+    def save_metrics(self, metrics: dict[str, Any], filename: str = "model_metrics.json") -> None:
+        """Метрики -> json, numpy типы -> python native"""
 
         with open(REPORTS_PATH / filename, "w", encoding="utf-8") as f:
-            json.dump(metrics_serializable, f, indent=2, ensure_ascii=False)
+            json.dump(self._to_serializable(metrics), f, indent=2, ensure_ascii=False)
