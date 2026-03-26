@@ -94,7 +94,7 @@ demand_forecasting/
 # Установка и настройка
 ## 1. Клонирование репозитория
 ```
-git clone https://github.com/your-org/demand_forecasting.git
+git clone https://github.com/Vexelll/DemandForecasting.git
 cd demand_forecasting
 ```
 
@@ -228,5 +228,3 @@ airflow dags trigger demand_forecasting_pipeline
 
 Включая 100 итераций Optuna (на полном наборе данных ~700 тыс. строк).      
 **Тестовый период**: последние 30% временной шкалы (все магазины).
-
-

@@ -1,10 +1,9 @@
 import logging
-import subprocess
 import sys
 import time
-import traceback
+import subprocess
 import shlex
-import requests
+import traceback
 from datetime import datetime
 from pathlib import Path
 
@@ -26,7 +25,7 @@ class AirflowRunner:
     )
 
     # Максимальное время ожидания готовности API-сервера (секунды)
-    API_HEALTH_TIMEOUT = 60
+    API_HEALTH_TIMEOUT = 180
     API_HEALTH_INTERVAL = 3
 
     def __init__(self):
@@ -537,7 +536,7 @@ class AirflowRunner:
                     self.logger.debug(f"  ... и еще {remaining} DAG")
 
                 # Проверяем наличие наших DAG
-                target_dags = ["demand_forecasting_pipeline", "weekly_model_retraining"]
+                target_dags = ["demand_forecasting_pipeline", "demand_forecasting_pipeline_weekly_retraining"]
                 found_dags = []
 
                 for target_dag in target_dags:
@@ -563,7 +562,19 @@ class AirflowRunner:
         """Проверка здоровья api-server"""
         try:
             response = requests.get("http://localhost:8080/api/v2/monitor/health", timeout=5)
-            return response.status_code == 200
+            if response.status_code == 200:
+                return True
+
+            if response.status_code == 503:
+                data = response.json()
+                db_healthy = data.get("metadatabase", {}).get("status") == "healthy"
+                if db_healthy:
+                    return True
+
+            if response.status_code == 502:
+                return False
+
+            return False
         except (requests.RequestException, ConnectionError, OSError):
             return False
 
@@ -581,7 +592,7 @@ class AirflowRunner:
         self.logger.warning(f"API-сервер не ответил за {self.API_HEALTH_TIMEOUT} сек")
         return False
 
-    def _start_service(self, service_type, command, name):
+    def _start_service(self, command, name):
         """Запуск сервиса Airflow (api-server или scheduler)"""
         self.logger.info(f"Запуск {name}")
 
@@ -597,11 +608,6 @@ class AirflowRunner:
 
             if process.poll() is None:
                 self.logger.info(f"{name} запущен (PID: {process.pid})")
-
-                # Проверяем, что api-server отвечает
-                if service_type == "api-server":
-                    self._wait_for_api_server()
-
                 return process
             else:
                 self.logger.error(f"{name} завершился сразу после запуска (код: {process.returncode})")
@@ -615,13 +621,13 @@ class AirflowRunner:
         """Запуск Airflow API Server в WSL"""
         command = self._build_airflow_command("api-server --port 8080 --host 0.0.0.0")
 
-        return self._start_service("api-server", command, "Airflow API Server")
+        return self._start_service(command, "Airflow API Server")
 
     def start_scheduler(self):
         """Запуск Airflow Scheduler в WSL"""
         command = self._build_airflow_command("scheduler")
 
-        return self._start_service("scheduler", command, "Airflow Scheduler")
+        return self._start_service(command, "Airflow Scheduler")
 
     @staticmethod
     def _terminate_process(process, name, timeout=15):
@@ -682,6 +688,12 @@ class AirflowRunner:
             self.logger.error("Не удалось запустить Scheduler")
             self._terminate_process(api_server_process, "API Server")
             return False
+
+        # Health check - оба сервиса запущены, ждём готовности API
+        if self._wait_for_api_server():
+            self.logger.info("API-сервер и Scheduler запущены, система готова")
+        else:
+            self.logger.warning("API-сервер не ответил, но процессы живы - продолжаем")
 
         # Даем время для загрузки DAG
         self.logger.info("Ожидание загрузки DAG файлов...")

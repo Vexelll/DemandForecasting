@@ -1,6 +1,6 @@
 import logging
-import subprocess
 import sys
+import subprocess
 from pathlib import Path
 
 

@@ -1,14 +1,14 @@
-import json
 import logging
+import json
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
+from sklearn.linear_model import LinearRegression
 from sklearn.dummy import DummyRegressor
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.linear_model import LinearRegression
 
-from config.settings import REPORTS_PATH, all_stores_time_split, get_model_config, get_reporting_config, resolve_data_path, setup_logging
+from config.settings import REPORTS_PATH, all_stores_time_split, resolve_data_path, setup_logging, get_model_config, get_reporting_config
 from src.models.base_model import BaseModels
 
 class BaselineModels(BaseModels):
@@ -118,7 +118,7 @@ class BaselineModels(BaseModels):
             valid_results = {k: v for k, v in results.items() if "error" not in v}
             json_results = {
                 "model_comparison": {
-                    name: self._to_serializable() for name, metrics in valid_results.items()
+                    name: self._to_serializable(metrics) for name, metrics in valid_results.items()
                 },
                 "summary": {
                     "best_model": results_df["MAPE"].idxmin() if "MAPE" in results_df.columns else "N/A",

@@ -3,8 +3,8 @@ import logging
 import joblib
 import pandas as pd
 
-from config.settings import DATA_PATH, REPORTS_PATH, get_reporting_config, setup_logging
 from src.database.database_manager import DatabaseManager
+from config.settings import REPORTS_PATH, resolve_data_path, setup_logging, get_reporting_config
 
 
 logger = logging.getLogger(__name__)
@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 def migrate_sales_history(db: DatabaseManager) -> None:
     """Миграция исторических данных из Pickle в SQLite"""
-    history_file = DATA_PATH / "processed/sales_history.pkl"
+    history_file = resolve_data_path("processed", "sales_history")
 
     if not history_file.exists():
         logger.warning(f"Файл истории не найден: {history_file}, пропуск миграции")
@@ -33,7 +33,7 @@ def migrate_sales_history(db: DatabaseManager) -> None:
 
 def migrate_predictions(db: DatabaseManager) -> None:
     """Миграция результатов прогнозирования из CSV в SQLite"""
-    predictions_file = DATA_PATH / "outputs/predictions.csv"
+    predictions_file = resolve_data_path("outputs", "predictions")
 
     if not predictions_file.exists():
         logger.warning(f"Файл прогнозов не найден: {predictions_file}, пропуск миграции")
@@ -59,7 +59,7 @@ def migrate_model_metrics(db: DatabaseManager) -> None:
     metrics_file = REPORTS_PATH / report_files.get("lgbm_metrics", "lgbm_model_metrics.csv")
 
     if not metrics_file.exists():
-        logger.warning(f"Файл результатов не найден: {results_file}, пропуск миграции")
+        logger.warning(f"Файл результатов не найден: {metrics_file}, пропуск миграции")
         return
 
     try:

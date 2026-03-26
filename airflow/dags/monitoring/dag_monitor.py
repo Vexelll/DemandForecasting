@@ -1,9 +1,9 @@
-import json
 import logging
+import json
 from datetime import datetime
 from typing import Any
 
-from config.settings import MODELS_PATH, REPORTS_PATH, get_model_config, get_monitoring_config, get_reporting_config, resolve_data_path, setup_logging
+from config.settings import MODELS_PATH, REPORTS_PATH, resolve_data_path, setup_logging, get_model_config, get_monitoring_config, get_reporting_config
 
 class DAGMonitor:
     """Трекает запуски DAG, считает success rate, генерит алерты"""

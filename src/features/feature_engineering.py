@@ -1,10 +1,10 @@
 import logging
-from typing import Any, Dict, List, Tuple
+from typing import Any
 
 import pandas as pd
 import numpy as np
 
-from config.settings import DATA_PATH, get_feature_config, setup_logging
+from config.settings import resolve_data_path, get_feature_config, setup_logging
 
 
 class FeatureEngineer:
@@ -372,7 +372,7 @@ class FeatureEngineer:
         if "Date" in df.columns and not pd.api.types.is_datetime64_any_dtype(df["Date"]):
             raise ValueError("Колонка Date должна содержать данные типа datetime")
 
-    def prepare_final_dataset(self, df: pd.DataFrame, verbose: bool = False) -> Tuple[pd.DataFrame, List[str]]:
+    def prepare_final_dataset(self, df: pd.DataFrame, verbose: bool = False) -> tuple[pd.DataFrame, list[str]]:
         """Весь пайплайн: NaN -> признаки -> лаги -> fillna -> drop exclude cols"""
         self.logger.info("Подготовка финального датасета...")
         self.logger.info(f"Исходные данные: {df.shape[0]} записей, {df.shape[1]} колонок")
@@ -407,7 +407,7 @@ class FeatureEngineer:
             self.logger.error(f"Ошибка подготовки датасета: {e}")
             raise
 
-    def get_feature_statistics(self) -> Dict[str, Any]:
+    def get_feature_statistics(self) -> dict[str, Any]:
         """Сколько признаков создано, по категориям"""
         return {
             "total_features": len(self.feature_names),
@@ -428,12 +428,12 @@ if __name__ == "__main__":
     # Настройка логирования
     setup_logging()
 
-    cleaned_data = pd.read_csv(DATA_PATH / "processed/cleaned_data.csv", parse_dates=["Date"])
+    cleaned_data = pd.read_csv(resolve_data_path("processed", "cleaned"), parse_dates=["Date"])
 
     engineer = FeatureEngineer()
     final_data, feature_names = engineer.prepare_final_dataset(cleaned_data)
 
-    final_data.to_csv(DATA_PATH / "processed/final_dataset.csv", index=False)
+    final_data.to_csv(resolve_data_path("processed", "final_dataset"), index=False)
 
     stats = engineer.get_feature_statistics()
     engineer.logger.info(f"Статистика обработки: {stats}")

@@ -3,13 +3,13 @@ from datetime import datetime
 
 import pandas as pd
 
-from config.settings import resolve_data_path
-from src.data.history_manager import SalesHistoryManager
 from src.data.preprocessing import DataPreprocessor
-from src.database.database_manager import DatabaseManager
 from src.features.feature_engineering import FeatureEngineer
+from src.data.history_manager import SalesHistoryManager
+from src.database.database_manager import DatabaseManager
 from src.models.lgbm_model import LGBMModel
 from src.pipeline.etl_pipeline import ETLPipeline
+from config.settings import resolve_data_path
 
 
 class PipelineOperations:
@@ -137,7 +137,7 @@ class PipelineOperations:
                 )
                 return True
             else:
-                self.logger.error(f"Ошибка обучения модели: {e}")
+                self.logger.error("Ошибка обучения модели: метрики не получены")
                 self._log_to_db("train_model", "failure", error_message="Метрики не получены")
                 return False
 

@@ -1,19 +1,35 @@
 {
-  "report_generated": "2026-02-15T15:10:54.257764",
-  "total_runs": 0,
-  "successful_runs": 0,
-  "success_rate": 0,
-  "average_duration": 0,
-  "recent_failures": [],
+  "report_generated": "2026-03-17T22:41:43.368049",
+  "total_runs": 3,
+  "successful_runs": 1,
+  "success_rate": 33.33333333333333,
+  "average_duration": 0.0,
+  "recent_failures": [
+    {
+      "timestamp": "2026-03-17T20:52:08.497522",
+      "dag_name": "demand_forecasting_pipeline_weekly_retraining",
+      "status": "failed",
+      "tasks_executed": 0,
+      "error": "DAG завершился со статусом: DagRunState.RUNNING",
+      "duration_seconds": 0.0
+    },
+    {
+      "timestamp": "2026-03-17T22:06:52.322884",
+      "dag_name": "demand_forecasting_pipeline_weekly_retraining",
+      "status": "failed",
+      "tasks_executed": 0,
+      "error": "DAG завершился со статусом: DagRunState.RUNNING",
+      "duration_seconds": 0.0
+    }
+  ],
   "data_quality": {
     "training_data_exists": true,
     "model_exists": true,
     "predictions_exist": true,
-    "data_freshness": "1 day, 3:57:33.887489"
+    "data_freshness_hours": 11.7
   },
   "system_health": {
-    "health_score": 75,
+    "health_score": 100,
     "status": "healthy"
-  },
-  "error": "Нет данных о запусках DAG"
+  }
 }

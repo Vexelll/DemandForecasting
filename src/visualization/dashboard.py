@@ -15,10 +15,10 @@ from components.charts import (
     create_pipeline_runs_table,
     create_store_comparison
 )
-from components.layout import create_layout
 from components.metrics import calculate_metrics, create_metric_cards
-from config.settings import get_dashboard_config, setup_logging
+from components.layout import create_layout
 from src.database.dashboard_data_provider import DashboardDataProvider
+from config.settings import setup_logging, get_dashboard_config
 
 class ForecastingDashboard:
     # Минимальный интервал между обновлениями данных (секунды)

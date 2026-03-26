@@ -1,5 +1,5 @@
-import sys
 import os
+import sys
 
 project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, project_root)
@@ -12,14 +12,14 @@ from datetime import datetime, timedelta
 
 from airflow import DAG
 from airflow.models import Variable
-from airflow.providers.smtp.operators.smtp import EmailOperator
-from airflow.providers.standard.operators.empty import EmptyOperator
 from airflow.providers.standard.operators.python import PythonOperator, BranchPythonOperator
+from airflow.providers.standard.operators.empty import EmptyOperator
+from airflow.providers.smtp.operators.smtp import EmailOperator
 
-from config.settings import get_pipeline_config
-from monitoring.dag_monitor import DAGMonitor
-from src.data.data_quality_checker import DataQualityChecker
 from src.pipeline.pipeline_operations import PipelineOperations
+from src.data.data_quality_checker import DataQualityChecker
+from monitoring.dag_monitor import DAGMonitor
+from config.settings import get_pipeline_config
 
 class DemandForecastingPipeline:
     def __init__(self):
@@ -38,7 +38,7 @@ class DemandForecastingPipeline:
             "email_on_retry": pipeline_cfg.get("email_on_retry", False),
             "retries": pipeline_cfg.get("retries", 2),
             "retry_delay": timedelta(minutes=pipeline_cfg.get("retry_delay_minutes", 5)),
-            "max_active_runs": self.on_failure_callback
+            "on_failure_callback": self.on_failure_callback
         }
 
     @property
@@ -71,24 +71,20 @@ class DemandForecastingPipeline:
         """Последняя задача DAG - фиксирует результат запуска + генерит отчет"""
         dag_run = context.get("dag_run")
         dag_id = dag_run.dag_id if dag_run else "unknown"
+        run_state = str(dag_run.state) if dag_run else "unknown"
 
-        # Статус по состоянию задач в текущем запуске
-        task_instances = dag_run.get_task_instances() if dag_run else []
-        failed = [ti for ti in task_instances if ti.state == "failed"]
-        executed = [ti for ti in task_instances if ti.state in ("success", "failed", "skipped")]
-
-        status = "failed" if failed else "success"
-        error_msg = ", ".join(ti.task_id for ti in failed) if failed else None
+        status = "success" if "running" in run_state.lower() else "failed"
+        error_msg = None if status == "success" else f"DAG завершился со статусом: {run_state}"
 
         self.monitor.log_dag_run(
             dag_name=dag_id,
             status=status,
-            tasks_executed=len(executed),
+            tasks_executed=0,
             error=error_msg
         )
         self.monitor.generate_performance_report()
 
-        self.logger.info(f"Мониторинг: {dag_id} -> {status}, задач выполнено: {len(executed)}")
+        self.logger.info(f"Мониторинг: {dag_id} -> {status} (state={run_state})")
 
     def check_new_data(self) -> str:
         """Проверяет mtime train.csv"""
@@ -193,7 +189,7 @@ class DemandForecastingPipeline:
                 success = step_fn()
                 if not success:
                     self.logger.error(f"Шаг {step_name} завершился неудачей")
-                    return "failer"
+                    return "failure"
                 self.logger.info(f"Шаг {step_name} выполнен")
             except Exception as e:
                 self.logger.error(f"Ошибка на шаге {step_name}: {e}")

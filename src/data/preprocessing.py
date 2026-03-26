@@ -1,11 +1,11 @@
 import logging
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Any
 
 import numpy as np
 import pandas as pd
 
-from config.settings import DATA_PATH, setup_logging
+from config.settings import resolve_data_path, setup_logging
 
 class DataPreprocessor:
     """Загрузка train/store csv, очистка (дубли, выбросы, закрытые дни) и приведение типов"""
@@ -57,7 +57,7 @@ class DataPreprocessor:
 
         return merged_data
 
-    def _validate_dataframe_columns(self, df: pd.DataFrame, required_columns: List[str], data_type: str) -> None:
+    def _validate_dataframe_columns(self, df: pd.DataFrame, required_columns: list[str], data_type: str) -> None:
         """Проверяем, что нужные колонки есть, иначе ValueError"""
         missing_columns = [col for col in required_columns if col not in df.columns]
         if missing_columns:
@@ -230,7 +230,7 @@ class DataPreprocessor:
         except Exception as e:
             raise ValueError(f"Ошибка парсинга дат: {e}") from e
 
-    def get_outlier_statistics(self, df: pd.DataFrame, column: str = "Sales", method: str = "iqr", threshold: float = 3.0) -> Dict[str, Any]:
+    def get_outlier_statistics(self, df: pd.DataFrame, column: str = "Sales", method: str = "iqr", threshold: float = 3.0) -> dict[str, Any]:
         """Статистика выбросов: сколько, какие границы, распределение"""
         outlier_mask = self._detect_outliers(df, column, method, threshold)
         outliers = df[outlier_mask][column]
@@ -273,7 +273,7 @@ if __name__ == "__main__":
 
     preprocessor = DataPreprocessor(verbose=False)
 
-    data = preprocessor.load_and_merge_data(DATA_PATH / "raw/train.csv", DATA_PATH / "raw/store.csv")
+    data = preprocessor.load_and_merge_data(resolve_data_path("raw", "train"), resolve_data_path("raw", "store"))
 
     # Смотрим на выбросы до очистки
     outlier_stats = preprocessor.get_outlier_statistics(data, column="Sales")
@@ -282,6 +282,6 @@ if __name__ == "__main__":
     logger.info(f"Выбросов: {outlier_stats["outliers_count"]} ({outlier_stats["outliers_percentage"]:.2f}%)")
 
     cleaned_data = preprocessor.clean_data(data)
-    preprocessor.save_processed_data(cleaned_data, DATA_PATH / "processed/cleaned_data.csv")
+    preprocessor.save_processed_data(cleaned_data, resolve_data_path("processed", "cleaned"))
 
     logger.info("Предобработка завершена")

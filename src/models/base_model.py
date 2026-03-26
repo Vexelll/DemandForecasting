@@ -1,19 +1,17 @@
-import json
 import logging
+import json
 from typing import Any
 
 import matplotlib
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
 from scipy import stats
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from statsmodels.tsa.stattools import acf
 
 from config.settings import REPORTS_PATH, get_dashboard_config, get_model_config, get_reporting_config
-
-plt.style.use(get_dashboard_config().get("plot_style", "seaborn-v0_8-whitegrid"))
 
 class BaseModels:
     def __init__(self) -> None:
@@ -115,7 +113,7 @@ class BaseModels:
         ax2.bar(indices, errors, alpha=0.7, color=bar_colors)
         ax2.axhline(y=0, color="black", linestyle="-", alpha=0.8)
 
-        mean_error = np.mean(errors)
+        mean_error = np.mean(np.array(y_true) - np.array(y_pred))
         ax2.axhline(y=mean_error, color="#F39C12", linestyle="--", linewidth=1.5, label=f"Средняя ошибка: {mean_error:,.0f} €")
         ax2.legend(fontsize=10, loc="upper right")
 

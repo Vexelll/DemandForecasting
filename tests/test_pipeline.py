@@ -1,15 +1,15 @@
 import logging
-import shutil
 import tempfile
+import shutil
 from pathlib import Path
 
+import pytest
 import numpy as np
 import pandas as pd
-import pytest
 
-from src.data.history_manager import SalesHistoryManager
 from src.data.preprocessing import DataPreprocessor
 from src.features.feature_engineering import FeatureEngineer
+from src.data.history_manager import SalesHistoryManager
 
 logger = logging.getLogger(__name__)
 

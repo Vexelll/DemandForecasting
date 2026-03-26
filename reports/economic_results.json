@@ -1,0 +1,12 @@
+{
+  "model": "LightGBM",
+  "mape_pct": 9.70066154434849,
+  "n_target_stores": 50,
+  "realization_rate": 0.1,
+  "development_cost_rub": 5268772.7272727275,
+  "annual_ops_cost_rub": 1337600.0,
+  "annual_saving_eur": 127424.4,
+  "annual_saving_rub": 12742440.22,
+  "roi_pct": 216.46,
+  "payback_months": 5.5
+}

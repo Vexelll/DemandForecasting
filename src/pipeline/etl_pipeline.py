@@ -1,22 +1,21 @@
 import logging
 from pathlib import Path
-from typing import Tuple, Optional, List
 
 import joblib
 import numpy as np
 import pandas as pd
 
-from config.settings import MODELS_PATH, DATA_PATH, get_model_config, get_feature_config, setup_logging
-from src.data.history_manager import SalesHistoryManager
 from src.data.preprocessing import DataPreprocessor
-from src.database.database_manager import DatabaseManager
 from src.features.feature_engineering import FeatureEngineer
+from src.data.history_manager import SalesHistoryManager
+from src.database.database_manager import DatabaseManager
+from config.settings import MODELS_PATH, resolve_data_path, setup_logging, get_model_config, get_feature_config
 
 class ETLPipeline:
 
     EXCLUDE_COLUMNS = FeatureEngineer.EXCLUDE_COLUMNS
 
-    def __init__(self, model_path: Optional[Path] = None) -> None:
+    def __init__(self, model_path: Path | None = None) -> None:
         self.logger = logging.getLogger(__name__)
 
         if model_path is None:
@@ -30,8 +29,8 @@ class ETLPipeline:
         self.preprocessor = DataPreprocessor()
         self.feature_engineer = FeatureEngineer()
         self.history_manager = SalesHistoryManager()
-        self.cleaned_data: Optional[pd.DataFrame] = None
-        self.processed_data: Optional[pd.DataFrame] = None
+        self.cleaned_data: pd.DataFrame | None = None
+        self.processed_data: pd.DataFrame | None = None
 
         self.db = DatabaseManager.create_database_manager()
 
@@ -54,7 +53,7 @@ class ETLPipeline:
             self.logger.error(f"Ошибка извлечения данных: {e}")
             raise
 
-    def transform(self, data: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
+    def transform(self, data: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
         """Очистка -> признаки -> лаги из истории -> финальный датасет"""
         self.logger.info("Очистка + feature engineering...")
 
@@ -103,7 +102,7 @@ class ETLPipeline:
 
         return final_data, feature_columns
 
-    def _validate_feature_columns(self, df: pd.DataFrame, feature_columns: List[str]) -> List[str]:
+    def _validate_feature_columns(self, df: pd.DataFrame, feature_columns: list[str]) -> list[str]:
         """Сверяет колонки с model.feature_name_, недостающие -> NaN, лишние -> убираем"""
         if not hasattr(self.model, "feature_name_"):
             self.logger.debug("Модель не содержит информации о признаках, пропуск валидации")
@@ -187,7 +186,7 @@ class ETLPipeline:
 
             # Predict
             self.logger.info("Прогнозирование...")
-            predictions = self.model.predict(processed_data[features])
+            predictions = np.expm1(self.model.predict(processed_data[features]))
 
             # Load
             results = self.store_predictions(predictions, output_path)
@@ -209,9 +208,9 @@ if __name__ == "__main__":
 
     pipeline = ETLPipeline()
     results = pipeline.run_pipeline(
-        DATA_PATH / "raw/test.csv",
-        DATA_PATH / "raw/store.csv",
-        DATA_PATH / "outputs/predictions.csv"
+        resolve_data_path("raw", "test"),
+        resolve_data_path("raw", "store"),
+        resolve_data_path("outputs", "predictions")
     )
 
     logger.info("Тестирование завершено успешно")

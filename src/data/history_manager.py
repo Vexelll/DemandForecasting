@@ -6,16 +6,16 @@ import joblib
 import numpy as np
 import pandas as pd
 
-from config.settings import DATA_PATH, get_feature_config, setup_logging
 from src.data.preprocessing import DataPreprocessor
 from src.database.database_manager import DatabaseManager
+from config.settings import resolve_data_path, setup_logging, get_feature_config
 
 class SalesHistoryManager:
     REQUIRED_COLUMNS = ["Store", "Date", "Sales", "DayOfWeek", "Promo", "StateHoliday", "SchoolHoliday"]
 
-    def __init__(self, history_file: str = "sales_history.pkl", db_path: Path | None = None) -> None:
+    def __init__(self, history_file: str | Path | None = None, db_path: Path | None = None) -> None:
         self.logger = logging.getLogger(__name__)
-        self.history_file = DATA_PATH / "processed" / history_file
+        self.history_file = Path(history_file) if history_file else resolve_data_path("processed", "sales_history")
         # Явный db_path для тестов, иначе дефолтный
         if db_path is not None:
             self.db = DatabaseManager(db_path=db_path)
@@ -338,7 +338,7 @@ class SalesHistoryManager:
             return False
 
         if export_path is None:
-            export_path = DATA_PATH / "processed" / "sales_history_export.csv"
+            export_path = resolve_data_path("processed", "sales_history_export")
 
         try:
             self.history.to_csv(export_path, index=False)
@@ -353,9 +353,9 @@ def initialize_sales_history(data_path: Path | None = None) -> SalesHistoryManag
     logger = logging.getLogger(__name__)
 
     if data_path is None:
-        data_path = DATA_PATH / "raw/train.csv"
+        data_path = resolve_data_path("raw", "train")
 
-    store_path = DATA_PATH / "raw/store.csv"
+    store_path = resolve_data_path("raw", "store")
 
     preprocessor = DataPreprocessor()
     train_data = preprocessor.load_and_merge_data(data_path, store_path)
