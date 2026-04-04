@@ -23,12 +23,36 @@
       "tasks_executed": 0,
       "error": null,
       "duration_seconds": 0.0
+    },
+    {
+      "timestamp": "2026-03-27T12:16:37.490844",
+      "dag_name": "demand_forecasting_pipeline_weekly_retraining",
+      "status": "success",
+      "tasks_executed": 0,
+      "error": null,
+      "duration_seconds": 0.0
+    },
+    {
+      "timestamp": "2026-03-27T12:30:32.734278",
+      "dag_name": "demand_forecasting_pipeline_weekly_retraining",
+      "status": "success",
+      "tasks_executed": 0,
+      "error": null,
+      "duration_seconds": 0.0
+    },
+    {
+      "timestamp": "2026-03-27T12:30:48.184221",
+      "dag_name": "demand_forecasting_pipeline",
+      "status": "success",
+      "tasks_executed": 0,
+      "error": null,
+      "duration_seconds": 0.0
     }
   ],
-  "success_rate": 33.33333333333333,
-  "last_success": "2026-03-17T22:41:43.359714",
+  "success_rate": 66.66666666666666,
+  "last_success": "2026-03-27T12:30:48.184221",
   "metrics_trend": [],
   "alerts": [
-    "Низкий процент успешных запусков DAG: 33.3%"
+    "Низкий процент успешных запусков DAG: 66.7%"
   ]
 }
