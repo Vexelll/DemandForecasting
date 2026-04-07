@@ -198,11 +198,15 @@ class DAGMonitor:
 
     def _load_monitoring_data(self) -> dict[str, Any]:
         """json -> dict"""
+        default = {"dag_runs": [], "success_rate": 0, "last_success": None, "metrics_trend": [], "alerts": []}
         try:
             with open(self.monitoring_file, "r", encoding="utf-8") as f:
                 return json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
-            return {"dag_runs": [], "success_rate": 0, "last_success": None, "metrics_trend": [], "alerts": []}
+        except FileNotFoundError:
+            return default
+        except json.JSONDecodeError as e:
+            self.logger.warning(f"Поврежден {self.monitoring_file.name}, история мониторинга сброшена: {e}")
+            return default
 
     def _save_monitoring_data(self, data: dict[str, Any]) -> None:
         """dict -> json"""
