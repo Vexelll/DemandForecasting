@@ -61,7 +61,7 @@ class DatabaseManager:
                     sales REAL NOT NULL,
                     day_of_week INTEGER NOT NULL,
                     promo INTEGER NOT NULL,
-                    state_holiday TEXT DEFAULT "0",
+                    state_holiday TEXT DEFAULT '0',
                     school_holiday INTEGER DEFAULT 0,
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (store_id, date)

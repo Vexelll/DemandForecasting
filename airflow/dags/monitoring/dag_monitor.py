@@ -275,7 +275,7 @@ def main():
         for alert in monitoring_data["alerts"][-5:]:
             logger.warning(f"ALERT: {alert}")
 
-    logger.info(f"Подробный отчет сохранен: reports/performance_report.json")
+    logger.info("Подробный отчет сохранен: reports/performance_report.json")
 
 
 if __name__ == "__main__":

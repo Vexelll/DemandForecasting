@@ -1,32 +1,15 @@
 {
-  "report_generated": "2026-03-17T22:41:43.368049",
-  "total_runs": 3,
-  "successful_runs": 1,
-  "success_rate": 33.33333333333333,
+  "report_generated": "2026-05-15T17:11:37.252474",
+  "total_runs": 13,
+  "successful_runs": 11,
+  "success_rate": 84.61538461538461,
   "average_duration": 0.0,
-  "recent_failures": [
-    {
-      "timestamp": "2026-03-17T20:52:08.497522",
-      "dag_name": "demand_forecasting_pipeline_weekly_retraining",
-      "status": "failed",
-      "tasks_executed": 0,
-      "error": "DAG завершился со статусом: DagRunState.RUNNING",
-      "duration_seconds": 0.0
-    },
-    {
-      "timestamp": "2026-03-17T22:06:52.322884",
-      "dag_name": "demand_forecasting_pipeline_weekly_retraining",
-      "status": "failed",
-      "tasks_executed": 0,
-      "error": "DAG завершился со статусом: DagRunState.RUNNING",
-      "duration_seconds": 0.0
-    }
-  ],
+  "recent_failures": [],
   "data_quality": {
     "training_data_exists": true,
     "model_exists": true,
     "predictions_exist": true,
-    "data_freshness_hours": 11.7
+    "data_freshness_hours": 3.9
   },
   "system_health": {
     "health_score": 100,

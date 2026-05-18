@@ -226,7 +226,7 @@ def main():
 
         if results:
             best_model, best_model_name = baseline_analyzer.get_best_model()
-            logger.info(f"Анализ базовых моделей успешно завершен")
+            logger.info("Анализ базовых моделей успешно завершен")
             logger.info(f"Рекомендуемая модель для дальнейшего использования: {best_model_name}")
 
             # Сравнительная визуализация - только успешные модели

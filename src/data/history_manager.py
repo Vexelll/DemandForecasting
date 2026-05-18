@@ -123,7 +123,7 @@ class SalesHistoryManager:
         self._save_history()
         self.logger.info(f"История обновлена: {len(new_data_clean)} новых записей, всего: {len(self.history)}")
 
-    def get_store_history(self, store_id: int, days_back: int = 365, end_date: str | datetime = None) -> pd.DataFrame:
+    def get_store_history(self, store_id: int, days_back: int = 365, end_date: str | datetime | None = None) -> pd.DataFrame:
         """Последние N дней одного магазина до end_date"""
         if self.history is None or self.history.empty:
             return pd.DataFrame()

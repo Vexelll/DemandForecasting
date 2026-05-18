@@ -157,7 +157,7 @@ class TestDataPreprocessor:
             "SchoolHoliday": [0, 0]
         })
 
-        save_path = self.test_dir / "proccessed/test_output.csv"
+        save_path = self.test_dir / "processed/test_output.csv"
 
         # Преобразуем даты для clean_data
         test_data["Date"] = pd.to_datetime(test_data["Date"])
@@ -176,7 +176,7 @@ class TestFeatureEngineer:
     """Тесты для feature engineering"""
 
     def setup_method(self):
-        """Инциализация тестового окружения"""
+        """Инициализация тестового окружения"""
         self.engineer = FeatureEngineer()
 
     def test_temporal_features_creation(self):
@@ -501,7 +501,7 @@ class TestHistoryManager:
         remaining_dates = self.manager.history["Date"]
         assert all(remaining_dates >= pd.Timestamp("2024-01-01"))
 
-        # Проверка, что изменения сохранения в БД
+        # Проверка, что изменения сохранены в БД
         new_manager = SalesHistoryManager(
             history_file = str(self.history_file),
             db_path = self.db_path
@@ -620,7 +620,7 @@ class TestEdgeCases:
         # Должен обработать с ошибками преобразования
         result = preprocessor.clean_data(test_data)
 
-        # Проверяем что результат - DateFrame
+        # Проверяем, что результат - DataFrame
         assert isinstance(result, pd.DataFrame)
 
 def run_basic_tests():

@@ -119,7 +119,7 @@ logger = logging.getLogger(__name__)
 def all_stores_time_split(df, train_time_ratio=None):
     """Все магазины в обоих наборах, split по ISOYear-Week (дефолт 80/20)"""
     if train_time_ratio is None:
-            train_time_ratio = get_model_config().get("train_time_ratio", 0.8)
+        train_time_ratio = get_model_config().get("train_time_ratio", 0.8)
 
     if not 0.0 < train_time_ratio < 1.0:
         raise ValueError(f"train_time_ratio должен быть в диапазоне (0, 1), получено: {train_time_ratio}")

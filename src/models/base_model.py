@@ -15,9 +15,9 @@ from config.settings import REPORTS_PATH, get_dashboard_config, get_model_config
 
 class BaseModels:
     def __init__(self) -> None:
-        self.metrics: Dict[str, Any] = {}
-        self.feature_importance: Optional[pd.DataFrame] = None
-        self.model: Optional[Any] = None
+        self.metrics: dict[str, Any] = {}
+        self.feature_importance: pd.DataFrame | None = None
+        self.model: Any | None = None
         self.logger = logging.getLogger(self.__class__.__name__)
 
         plot_style = get_dashboard_config().get("plot_style", "seaborn-v0_8-whitegrid")
@@ -263,7 +263,7 @@ class BaseModels:
                 ])
             else:
                 # Fallback: если у всех магазинов мало данных
-                self.logger.warning("Недостаточно данных для помогазинной ACF, используется общий срез")
+                self.logger.warning("Недостаточно данных для расчета ACF по каждому магазину, используется общий срез")
                 mean_acf_values = acf(
                     residuals[:min(len(residuals), 5000)],
                     nlags=max_lags, fft=True

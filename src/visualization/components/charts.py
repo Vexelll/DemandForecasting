@@ -126,7 +126,7 @@ def _add_reference_lines(fig: go.Figure, lines: list, data: np.ndarray) -> None:
             y=y_pos,
             xref="x",
             yref="paper",
-            text=f"<b>{line_spec['label']}</b>",
+            text=f"<b>{line_spec["label"]}</b>",
             showarrow=show_arrow,
             arrowhead=0,
             arrowwidth=1,
@@ -223,7 +223,7 @@ def create_forecast_chart(data):
             gridcolor=COLORS["grid"],
             showgrid=True
         ),
-        hovermode = "x unified",
+        hovermode="x unified",
         legend=HORIZONTAL_LEGEND,
         height=450
     )
@@ -618,7 +618,7 @@ def create_feature_importance_chart() -> go.Figure:
     return create_info_chart(
         "Важность признаков модели",
         "График будет доступен после обучения модели.<br>"
-        "Файл lgbm_feature_importance.csv не найден."
+        f"Файл feature_importance_top{top_n}.csv не найден."
     )
 
 @lru_cache(maxsize=4)

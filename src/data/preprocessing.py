@@ -277,7 +277,7 @@ if __name__ == "__main__":
 
     # Смотрим на выбросы до очистки
     outlier_stats = preprocessor.get_outlier_statistics(data, column="Sales")
-    logger.info(f"Статистика выбросов до очистки:")
+    logger.info("Статистика выбросов до очистки:")
     logger.info(f"Записей: {outlier_stats["total_records"]}")
     logger.info(f"Выбросов: {outlier_stats["outliers_count"]} ({outlier_stats["outliers_percentage"]:.2f}%)")
 

@@ -313,12 +313,15 @@ class DemandForecastingPipeline:
             )
 
             # Уведомление
-            success_notification = EmailOperator(
-                task_id="success_notification",
-                to=Variable.get("alert_email_recipients", default_var="data_team@company.com"),
-                subject="Прогнозы готовы",
-                html_content="<h3>Пайплайн выполнен успешно</h3>"
-            )
+            if pipeline_cfg.get("enable_email_notifications", False):
+                success_notification = EmailOperator(
+                    task_id="success_notification",
+                    to=Variable.get("alert_email_recipients", default_var="data_team@company.com"),
+                    subject="Прогнозы готовы",
+                    html_content="<h3>Пайплайн выполнен успешно</h3>"
+                )
+            else:
+                success_notification = EmptyOperator(task_id="success_notification")
 
             # Мониторинг - фиксация результата (all_done - срабатывает на любой ветке)
             log_result = PythonOperator(

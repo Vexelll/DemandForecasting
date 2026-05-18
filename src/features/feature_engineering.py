@@ -126,7 +126,7 @@ class FeatureEngineer:
 
         df["IsSaturday"] = (df["DayOfWeek"] == 6).astype(int)
         df["IsSunday"] = (df["DayOfWeek"] == 7).astype(int)
-        df["IsWeekend"] = ((df["DayOfWeek"] >= 6)).astype(int)
+        df["IsWeekend"] = (df["DayOfWeek"] >= 6).astype(int)
 
         # sin/cos - чтобы декабрь(12) и январь(1) были рядом, а не на разных концах шкалы
         df["Month_sin"] = np.sin(2 * np.pi * df["Month"] / 12)
@@ -212,7 +212,7 @@ class FeatureEngineer:
 
         return result
 
-    def create_lag_features(self, df: pd.DataFrame, lags: list = None) -> pd.DataFrame:
+    def create_lag_features(self, df: pd.DataFrame, lags: list | None = None) -> pd.DataFrame:
         """Лаги через полный календарь (MultiIndex) - shift() по дням, а не по строкам"""
         self.logger.info("Создание лаговых признаков...")
 

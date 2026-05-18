@@ -5,7 +5,6 @@ import unittest
 from pathlib import Path
 
 from airflow.dags.monitoring.dag_monitor import DAGMonitor
-from airflow.sdk.bases.decorator import FParams
 
 
 class TestDAGMonitor(unittest.TestCase):

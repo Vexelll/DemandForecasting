@@ -196,7 +196,7 @@ class ForecastingDashboard:
         time_str = datetime.now().strftime("%H:%M:%S")
         return f"Последнее обновление: {time_str} (источник: {source})"
 
-    def run(self, debug: bool = None, port: int = None) -> None:
+    def run(self, debug: bool | None = None, port: int | None = None) -> None:
         """app.run_server с портом из конфига"""
         dashboard_cfg = get_dashboard_config()
         if debug is None:

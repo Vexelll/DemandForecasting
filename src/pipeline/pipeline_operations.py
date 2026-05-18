@@ -29,7 +29,7 @@ class PipelineOperations:
         """datetime.now() -> _run_started_at перед каждой задачей"""
         self._run_started_at = datetime.now()
 
-    def _log_to_db(self, dag_name: str, status: str, records_processed: int = 0, error_message: str = None, **metrics) -> None:
+    def _log_to_db(self, dag_name: str, status: str, records_processed: int = 0, error_message: str | None = None, **metrics) -> None:
         """Пишет в pipeline_runs: run_id, статус, метрики, длительность"""
         if self.db is None:
             return
@@ -175,7 +175,7 @@ class PipelineOperations:
 
             # Нет PredictedSales - остальные проверки бессмысленны
             if "PredictedSales" not in predictions.columns:
-                self.logger.error(f"Колонка PredictedSales отсутствует в predictions.csv")
+                self.logger.error("Колонка PredictedSales отсутствует в predictions.csv")
                 self._log_to_db("validate_predictions", "failure", error_message="PredictedSales not found")
                 return False
 

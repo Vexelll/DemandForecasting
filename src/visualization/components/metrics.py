@@ -41,8 +41,8 @@ def calculate_metrics(data) -> dict[str, Any]:
     # Расчет ошибки
     errors = actual - predicted
 
-    # Безопасный расчет MAPE (иключаем нулевые продажи)
-    with np.errstate(divide="ignore", invalid ="ignore"):
+    # Безопасный расчет MAPE (исключаем нулевые продажи)
+    with np.errstate(divide="ignore", invalid="ignore"):
         non_zero_mask = actual > 0
         if non_zero_mask.sum() > 0:
             ape = np.abs(errors[non_zero_mask]) / actual[non_zero_mask] * 100
@@ -131,7 +131,7 @@ def create_metric_cards(metrics: dict[str, Any]) -> list[html.Div]:
 
     return [mape_card, mae_card, rmse_card, sales_card]
 
-def _create_metric_card(title: str, value: str, color: str, description: str = None) -> html.Div:
+def _create_metric_card(title: str, value: str, color: str, description: str | None = None) -> html.Div:
     """Одна карточка: заголовок + значение + цветовая полоска"""
     children = [
         html.Div(title, className="metric-title"),

@@ -80,7 +80,7 @@ class AirflowRunner:
 
         if missing_paths:
             self.logger.warning(f"Отсутствуют важные директории: {missing_paths}")
-            self.logger.warning(f"Некоторые функции могут работать некорректно")
+            self.logger.warning("Некоторые функции могут работать некорректно")
 
     @staticmethod
     def _convert_to_wsl_path(windows_path: Path) -> str:

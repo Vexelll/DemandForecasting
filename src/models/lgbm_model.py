@@ -171,7 +171,7 @@ class LGBMModel(BaseModels):
         self.study.optimize(
             lambda trial: self.objective(trial, X, y),
             n_trials=n_trials,
-            show_progress_bar=False,  # Прогресс-бар
+            show_progress_bar=False,  # Без прогресс-бара
         )
 
         n_estimators_max = model_cfg.get("n_estimators_max", 5000)

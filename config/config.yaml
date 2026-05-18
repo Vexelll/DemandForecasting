@@ -56,7 +56,7 @@ model:
 
 # Оптимизация гиперпараметров (Optuna)
 optimization:
-  n_trials: 100
+  n_trials: 10
   direction: "minimize"
   sampler_seed: 42
   pruner:
@@ -79,6 +79,7 @@ pipeline:
   max_active_runs: 1
   email_on_failure: true
   email_on_retry: false
+  enable_email_notifications: false # Включает отправку EmailOperator, после успешного DAG (требует настроенного SMTP)
 
   # Расписание DAG (cron-выражения)
   schedules:
